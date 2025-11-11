@@ -1,0 +1,18 @@
+name = "TextWorld Agent"
+description = """
+White agent for TextWorld evaluation.
+Uses LLM to complete household tasks in TextWorld environment.
+"""
+version = "0.1.0"
+
+defaultInputModes = ["text/plain"]
+defaultOutputModes = ["text/plain"]
+
+[capabilities]
+
+[[skills]]
+id = "textworld_task_fulfillment"
+name = "TextWorld Task Fulfillment"
+description = "Completes household tasks in TextWorld environment"
+tags = ["white agent", "textworld", "household"]
+

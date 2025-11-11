@@ -1,0 +1,112 @@
+{
+  "version": "1.0",
+  "scoring_scale": {
+    "min": 1.0,
+    "max": 10.0
+  },
+  "criteria": {
+    "task_completion": {
+      "name": "Task Completion",
+      "weight": 0.40,
+      "description": "Whether the agent successfully completed the goal and achieved the correct final state",
+      "scoring_guidelines": {
+        "high_score": "Task completed successfully with all goal conditions met",
+        "medium_score": "Task partially completed or completed with minor errors",
+        "low_score": "Task not completed or completed incorrectly"
+      },
+      "examples": {
+        "good": "Agent correctly placed clean apple in refrigerator as specified",
+        "poor": "Agent placed apple in wrong location or failed to clean it first"
+      },
+      "prompt_template": "Evaluate whether the agent successfully completed the task goal. Consider: Did it achieve the final desired state? Were all conditions met (e.g., object cleaned, heated, or placed correctly)?"
+    },
+    "efficiency": {
+      "name": "Efficiency",
+      "weight": 0.30,
+      "description": "Minimal unnecessary actions, direct path to goal, few mistakes or corrections",
+      "scoring_guidelines": {
+        "high_score": "Minimal steps, direct path, no wasted actions or backtracking",
+        "medium_score": "Some unnecessary actions or minor detours, but generally efficient",
+        "low_score": "Many wasted actions, extensive backtracking, or circular behavior"
+      },
+      "examples": {
+        "good": "7 steps to complete task with no wasted moves",
+        "poor": "25 steps with multiple visits to same locations, unnecessary examinations"
+      },
+      "prompt_template": "Assess the efficiency of the agent's path. Consider: Number of steps relative to optimal, unnecessary actions (e.g., repeated looks, redundant navigation), backtracking, corrections, and recovery from mistakes."
+    },
+    "strategy_quality": {
+      "name": "Strategy Quality",
+      "weight": 0.20,
+      "description": "Logical action sequence, appropriate subgoal decomposition, sensible exploration",
+      "scoring_guidelines": {
+        "high_score": "Clear planning, logical subgoal ordering, efficient exploration when needed",
+        "medium_score": "Some planning evident but suboptimal ordering or exploration",
+        "low_score": "No clear strategy, random actions, poor subgoal sequencing"
+      },
+      "examples": {
+        "good": "Agent first located object, then performed required transformations (clean/heat/slice), then moved to target location",
+        "poor": "Agent moved objects without checking required properties, attempted actions out of order"
+      },
+      "prompt_template": "Evaluate the strategic thinking and planning. Consider: Is there evidence of logical subgoal decomposition? Are actions sequenced appropriately? Is exploration purposeful? Are dependencies between actions understood (e.g., must clean before moving)?"
+    },
+    "execution_quality": {
+      "name": "Execution Quality",
+      "weight": 0.05,
+      "description": "Valid commands, syntax correctness, appropriate use of game mechanics",
+      "scoring_guidelines": {
+        "high_score": "All commands valid, correct syntax, appropriate use of game mechanics",
+        "medium_score": "Most commands valid, occasional syntax errors that don't block progress",
+        "low_score": "Many invalid commands, syntax errors, misuse of game mechanics"
+      },
+      "examples": {
+        "good": "All commands properly formatted and accepted by environment",
+        "poor": "Frequent 'unknown command' errors, incorrect object names, invalid action sequences"
+      },
+      "prompt_template": "Assess command execution quality. Consider: Are commands syntactically correct? Are object/receptacle names accurate? Are game mechanics used appropriately (e.g., can't heat with fridge)? Are invalid commands quickly corrected?"
+    },
+    "reasoning_quality": {
+      "name": "Reasoning Quality",
+      "weight": 0.05,
+      "description": "Coherent reasoning traces, evidence of planning, appropriate error handling",
+      "scoring_guidelines": {
+        "high_score": "Clear, coherent reasoning at each step showing understanding and planning",
+        "medium_score": "Some reasoning present but inconsistent or unclear",
+        "low_score": "Little to no reasoning, reasoning doesn't match actions, or contradictory"
+      },
+      "examples": {
+        "good": "Reasoning traces show clear understanding of goal, current state, and next steps at each action",
+        "poor": "Empty reasoning fields or reasoning that doesn't explain the chosen action"
+      },
+      "prompt_template": "Evaluate the quality of reasoning traces. Consider: Is reasoning provided at each step? Does it explain the action choice? Is it coherent and consistent? Does it show understanding of the task state and goal? How does the agent handle errors or unexpected observations?"
+    }
+  },
+  "qualitative_assessments": {
+    "enabled": true,
+    "fields": [
+      "strengths",
+      "weaknesses",
+      "notable_behaviors",
+      "recommendations"
+    ]
+  },
+  "reasoning_trace_analysis": {
+    "enabled": true,
+    "focus_areas": [
+      "reasoning_quality",
+      "planning_evidence",
+      "error_handling"
+    ]
+  },
+  "model_settings": {
+    "quick_rating": {
+      "model": "openai/gpt-4o",
+      "temperature": 0.0
+    },
+    "detailed_rating": {
+      "model": "openai/gpt-4o",
+      "temperature": 0.3
+    }
+  }
+}
+

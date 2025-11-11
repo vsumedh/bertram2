@@ -1,0 +1,309 @@
+"""TextWorld environment wrapper for ALFWorld."""
+
+import copy
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from alfworld.agents.environment import get_environment
+
+from .messaging import sanitize_action
+
+
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "green_agent"
+DEFAULT_TASK_LIST = ASSETS_DIR / "task_list.txt"
+
+
+TEXTWORLD_ENV_CFG: Dict[str, Any] = {
+    "dataset": {
+        "data_path": "/home/jupyter/.cache/alfworld/json_2.1.1/train",
+        "eval_id_data_path": "/home/jupyter/.cache/alfworld/json_2.1.1/valid_seen",
+        "eval_ood_data_path": "/home/jupyter/.cache/alfworld/json_2.1.1/valid_unseen",
+        "num_train_games": 0,
+        "num_eval_games": 1,
+    },
+    "env": {
+        "goal_desc_human_anns_prob": 0.0,
+        "domain_randomization": False,
+        "task_types": [1, 2, 3, 4, 5, 6],
+        "expert_timeout_steps": 150,
+        "expert_type": "planner",
+    },
+    "logic": {
+        "domain": "/home/jupyter/.cache/alfworld/logic/alfred.pddl",
+        "grammar": "/home/jupyter/.cache/alfworld/logic/alfred.twl2",
+    },
+    "general": {
+        "training_method": "dqn",
+    },
+    "dagger": {
+        "training": {
+            "max_nb_steps_per_episode": 50,
+        }
+    },
+    "rl": {
+        "training": {
+            "max_nb_steps_per_episode": 50,
+        }
+    },
+}
+
+
+class TextWorldEnvironmentError(Exception):
+    """Raised when TextWorld environment operations fail."""
+
+
+def load_task_from_list(
+    task_index: int, task_list_path: Path = DEFAULT_TASK_LIST
+) -> Dict[str, str]:
+    """Load task metadata from task list file.
+
+    Args:
+        task_index: Index of task in list (0-based)
+        task_list_path: Path to task list file
+
+    Returns:
+        Dictionary with task metadata (game_file_path, split, task_type, difficulty, description)
+    """
+    if not task_list_path.exists():
+        raise TextWorldEnvironmentError(f"Task list not found at {task_list_path}")
+
+    with task_list_path.open("r", encoding="utf-8") as handle:
+        lines = [
+            line.strip() for line in handle if line.strip() and not line.startswith("#")
+        ]
+
+    if not lines:
+        raise TextWorldEnvironmentError(f"Task list {task_list_path} is empty")
+
+    if task_index < 0 or task_index >= len(lines):
+        raise TextWorldEnvironmentError(
+            f"Task index {task_index} out of range (0-{len(lines) - 1})"
+        )
+
+    parts = lines[task_index].split("|")
+    if len(parts) < 3:
+        raise TextWorldEnvironmentError(
+            f"Invalid task specification at index {task_index}: {lines[task_index]}"
+        )
+
+    return {
+        "game_file_path": parts[0],
+        "split": parts[1],
+        "task_type": parts[2],
+        "difficulty": parts[3] if len(parts) > 3 else "unknown",
+        "description": parts[4] if len(parts) > 4 else "",
+    }
+
+
+@dataclass
+class TaskConfig:
+    """Configuration for a TextWorld evaluation task."""
+
+    task_index: int = 0
+    max_steps: int = 50
+    task_list_path: Optional[str] = None
+    episode_id: Optional[str] = None
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "TaskConfig":
+        """Create TaskConfig from JSON payload."""
+        return cls(
+            task_index=int(payload.get("task_index", 0)),
+            max_steps=int(payload.get("max_steps", 50)),
+            task_list_path=payload.get("task_list_path"),
+            episode_id=payload.get("episode_id"),
+        )
+
+    def resolve_task_list_path(self) -> Path:
+        """Resolve task list path, using default if not specified."""
+        if self.task_list_path:
+            return Path(self.task_list_path)
+        return DEFAULT_TASK_LIST
+
+
+@dataclass
+class StepResult:
+    """Result of a single environment step."""
+
+    observation: str
+    reward: float
+    done: bool
+    cumulative_reward: float
+    metadata: Dict[str, Any]
+
+
+class TextWorldEnvironment:
+    """Wrapper around ALFWorld environment for TextWorld evaluation."""
+
+    def __init__(self, task_config: TaskConfig):
+        """Initialize environment with task configuration.
+
+        Args:
+            task_config: Configuration for the task
+        """
+        self._task_config = task_config
+        self._env = None
+        self._episode_id = (
+            task_config.episode_id or f"ep_{int(time.time())}_{task_config.task_index}"
+        )
+        self._goal: str = ""
+        self._current_observation: str = ""
+        self._cumulative_reward = 0.0
+        self._step_count = 0
+        self._done = False
+        self._info: Dict[str, Any] = {}
+        self._start_time = time.time()
+        self._task_entry: Optional[Dict[str, str]] = None
+
+    @property
+    def goal(self) -> str:
+        """Get current goal description."""
+        return self._goal
+
+    @property
+    def current_observation(self) -> str:
+        """Get current observation."""
+        return self._current_observation
+
+    @property
+    def episode_id(self) -> str:
+        """Get episode ID."""
+        return self._episode_id
+
+    def setup(self) -> Dict[str, Any]:
+        """Set up environment and load task.
+
+        Returns:
+            Dictionary with episode_id, task_entry, initial_observation, goal
+        """
+        task_entry = load_task_from_list(
+            self._task_config.task_index, self._task_config.resolve_task_list_path()
+        )
+        self._task_entry = task_entry
+
+        alfworld_data = os.environ.get("ALFWORLD_DATA") or os.path.expanduser(
+            "~/.cache/alfworld"
+        )
+        game_dir = (
+            Path(alfworld_data)
+            / "json_2.1.1"
+            / task_entry["split"]
+            / task_entry["game_file_path"]
+        )
+        game_file_path = game_dir / "game.tw-pddl"
+        if not game_file_path.exists():
+            raise TextWorldEnvironmentError(
+                f"Game file not found: {game_file_path}. "
+                "Ensure ALFWorld assets are available."
+            )
+
+        config = copy.deepcopy(TEXTWORLD_ENV_CFG)
+        config["dataset"] = {
+            "data_path": str(game_dir),
+            "eval_id_data_path": str(game_dir),
+            "eval_ood_data_path": str(game_dir),
+            "num_train_games": -1,
+            "num_eval_games": -1,
+        }
+
+        env_cls = get_environment("AlfredTWEnv")
+        self._env = env_cls(config=config).init_env(batch_size=1)
+
+        observations, info = self._env.reset()
+        observation = observations[0]
+
+        # Extract goal
+        if "extra.goal" in info:
+            goal_value = info["extra.goal"]
+        elif "goal" in info:
+            goal_value = info["goal"]
+        else:
+            goal_value = task_entry.get("description") or "Complete the task"
+
+        if isinstance(goal_value, list) and goal_value:
+            goal_value = goal_value[0]
+
+        # Initialize state
+        self._goal = goal_value
+        self._current_observation = observation
+        self._cumulative_reward = 0.0
+        self._step_count = 0
+        self._done = False
+        self._info = {
+            key: value[0] if isinstance(value, list) else value
+            for key, value in info.items()
+        }
+        self._start_time = time.time()
+
+        return {
+            "episode_id": self._episode_id,
+            "task_entry": task_entry,
+            "initial_observation": observation,
+            "goal": self._goal,
+        }
+
+    def step(self, raw_action: str) -> StepResult:
+        """Execute an action in the environment.
+
+        Args:
+            raw_action: Action string from agent
+
+        Returns:
+            StepResult with observation, reward, done flag, etc.
+        """
+        if self._env is None:
+            raise TextWorldEnvironmentError(
+                "Environment not initialized; call setup() first"
+            )
+
+        action = sanitize_action(raw_action)
+
+        observations, rewards, done_flags, info = self._env.step([action])
+        observation = observations[0]
+        reward = float(rewards[0])
+        done = bool(done_flags[0])
+
+        # Unbatch info
+        info_unbatched: Dict[str, Any] = {}
+        for key, value in info.items():
+            if isinstance(value, list) and value:
+                info_unbatched[key] = value[0]
+            else:
+                info_unbatched[key] = value
+
+        # Update state
+        self._current_observation = observation
+        self._cumulative_reward += reward
+        self._step_count += 1
+        self._done = done
+        self._info = info_unbatched
+
+        return StepResult(
+            observation=observation,
+            reward=reward,
+            done=done,
+            cumulative_reward=self._cumulative_reward,
+            metadata=info_unbatched,
+        )
+
+    def metrics(self) -> Dict[str, Any]:
+        """Get evaluation metrics.
+
+        Returns:
+            Dictionary with success, step_count, cumulative_reward, etc.
+        """
+        return {
+            "episode_id": self._episode_id,
+            "step_count": self._step_count,
+            "cumulative_reward": self._cumulative_reward,
+            "success": bool(self._info.get("won", False)),
+        }
+
+    def reset(self) -> None:
+        """Reset and clean up environment."""
+        if self._env is not None:
+            self._env.close()
+        self._env = None

@@ -1,0 +1,18 @@
+name = "TextWorld Evaluator"
+description = """
+Green agent for TextWorld evaluation framework.
+Manages the TextWorld environment and evaluates white agent performance.
+"""
+version = "0.1.0"
+
+defaultInputModes = ["text/plain"]
+defaultOutputModes = ["text/plain"]
+
+[capabilities]
+
+[[skills]]
+id = "textworld_evaluation"
+name = "TextWorld Evaluation"
+description = "Evaluates agent performance in TextWorld household tasks"
+tags = ["green agent", "evaluation", "textworld"]
+

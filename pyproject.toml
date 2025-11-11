@@ -1,0 +1,19 @@
+[project]
+name = "textworld-agentify"
+version = "0.1.0"
+description = "TextWorld agent evaluation framework using A2A protocol"
+requires-python = ">=3.9"
+dependencies = [
+    "a2a-sdk[http-server]>=0.3.8",
+    "alfworld",
+    "litellm",
+    "uvicorn>=0.37.0",
+    "typer>=0.19.2",
+    "python-dotenv",
+    "httpx",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+

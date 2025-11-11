@@ -1,0 +1,8 @@
+a2a-sdk[http-server]>=0.3.8
+alfworld
+litellm
+uvicorn>=0.37.0
+typer>=0.19.2
+python-dotenv
+httpx
+
