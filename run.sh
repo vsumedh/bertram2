@@ -1,0 +1,3 @@
+#!/bin/bash
+
+/opt/conda/envs/agentbeats/bin/python3 main.py green

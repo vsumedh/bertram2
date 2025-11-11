@@ -3,6 +3,7 @@
 import asyncio
 import typer
 
+from typing_extensions import Annotated # For Python 3.8+
 from src.green_agent.agent import start_green_agent
 from src.white_agent.agent import start_white_agent
 from launcher import launch_evaluation
@@ -13,8 +14,8 @@ app = typer.Typer(help="TextWorld Agentify - Agent evaluation framework")
 @app.command()
 def green(
     agent_name: str = "agent_card",
-    host: str = "0.0.0.0",
-    port: int = 8722,
+    host: Annotated[str, typer.Argument(envvar="HOST")] = "0.0.0.0",
+    port: Annotated[int, typer.Argument(envvar="AGENT_PORT")] = 8722
 ):
     """Start the green agent (evaluation manager)."""
     start_green_agent(agent_name=agent_name, host=host, port=port)
