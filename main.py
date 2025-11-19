@@ -24,8 +24,8 @@ def green(
 @app.command()
 def white(
     agent_name: str = "agent_card",
-    host: str = "0.0.0.0",
-    port: int = 8724,
+    host: Annotated[str, typer.Argument(envvar="HOST")] = "0.0.0.0",
+    port: Annotated[int, typer.Argument(envvar="AGENT_PORT")] = 8723
 ):
     """Start the white agent (agent under test)."""
     start_white_agent(agent_name=agent_name, host=host, port=port)
