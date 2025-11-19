@@ -64,6 +64,29 @@ python main.py white --host 0.0.0.0 --port 9002
 python launcher.py
 ```
 
+### Integrating with agentbeats
+
+#### Run Green agent
+
+```bash
+conda activate earthshaker2
+cd ~/dev/textworld-agentify/src/green_agent
+HOST=ab.veenasumedh.com PORT=8011 agentbeats run_ctrl
+```
+
+This will run the green agent, with a controller url of http://ab.veenasumedh.com:8011/ which can be registered on v2.agentbeats.org
+
+#### Run Green agent
+
+```bash
+conda activate earthshaker2
+cd ~/dev/textworld-agentify/src/white_agent
+HOST=ab.veenasumedh.com PORT=8012 agentbeats run_ctrl
+```
+
+This will run the white agent, with a controller url of http://ab.veenasumedh.com:8012/ which can be registered on v2.agentbeats.org
+
+
 ## Evaluation Metrics
 
 The framework uses an LLM-as-a-judge approach to evaluate agent performance. After each episode, the LLM judge provides structured assessments across multiple dimensions.
