@@ -73,18 +73,33 @@ conda activate earthshaker2
 cd ~/dev/textworld-agentify/src/green_agent
 HOST=ab.veenasumedh.com PORT=8011 agentbeats run_ctrl
 ```
+<img width="1213" height="117" alt="run_green_agent" src="https://github.com/user-attachments/assets/df3dbbef-b24c-4cdc-86ed-628057bbcc00" />
 
 This will run the green agent, with a controller url of http://ab.veenasumedh.com:8011/ which can be registered on v2.agentbeats.org
 
-#### Run Green agent
+<img width="614" height="526" alt="register_green_agent" src="https://github.com/user-attachments/assets/246ab13a-acc2-4525-8a8d-15f5d49c9c6d" />
+
+The agent card is visible from the status page, showing it is correctly registered:
+
+<img width="1169" height="814" alt="green_agent_card" src="https://github.com/user-attachments/assets/554a89d6-ee24-42a4-a23a-f805177fd2e3" />
+
+
+#### Run White agent
 
 ```bash
 conda activate earthshaker2
 cd ~/dev/textworld-agentify/src/white_agent
 HOST=ab.veenasumedh.com PORT=8012 agentbeats run_ctrl
 ```
+<img width="1211" height="113" alt="run_white_agent" src="https://github.com/user-attachments/assets/7eb846d2-3f2d-443c-bca4-b66811edf583" />
 
 This will run the white agent, with a controller url of http://ab.veenasumedh.com:8012/ which can be registered on v2.agentbeats.org
+
+<img width="614" height="518" alt="register_white_agent" src="https://github.com/user-attachments/assets/b0370dbd-fdc4-4646-804c-008475cf2702" />
+
+The agent card is visible from the status page, showing it is correctly registered:
+
+<img width="1186" height="828" alt="white_agent_card" src="https://github.com/user-attachments/assets/947bd88a-5201-4f43-a0be-01a724938d57" />
 
 
 ## Evaluation Metrics
