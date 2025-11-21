@@ -38,17 +38,41 @@
     "strategy_quality": {
       "name": "Strategy Quality",
       "weight": 0.20,
-      "description": "Logical action sequence, appropriate subgoal decomposition, sensible exploration",
+      "description": "How sensible, prioritized, and adaptive the agent’s action sequence is.",
       "scoring_guidelines": {
-        "high_score": "Clear planning, logical subgoal ordering, efficient exploration when needed",
-        "medium_score": "Some planning evident but suboptimal ordering or exploration",
-        "low_score": "No clear strategy, random actions, poor subgoal sequencing"
+        "9-10": [
+          "Prioritizes high-probability locations first.",
+          "Clear subgoal decomposition (find object → bring to target → complete action).",
+          "Minimal redundant steps or revisits.",
+          "Adapts strategy quickly to new observations or failed actions."
+        ],
+        "7-8": [
+          "Mostly sensible ordering of actions.",
+          "Occasional inefficient choices, trajectory remains focused.",
+          "Some adaptation to new information.",
+          "Few unnecessary revisits."
+        ],
+        "5-6": [
+          "Systematic but poorly prioritized search.",
+          "Many unnecessary detours; checks unlikely locations before likely ones.",
+          "Some repetitive or redundant exploration.",
+          "Eventually completes task, but inefficiently."
+        ],
+        "3-4": [
+          "Partially systematic but often uninformed.",
+          "Frequently revisits same objects/locations without progress.",
+          "Poor adaptation to failures or new info.",
+          "Appears to be following a shallow or generic plan."
+        ],
+        "0-2": [
+          "Strategy appears random or chaotic.",
+          "No prioritization or coherent search pattern.",
+          "Ignores obvious task structure.",
+          "Frequent looping or repeated failed actions.",
+          "Does not make meaningful progress toward the goal."
+        ]
       },
-      "examples": {
-        "good": "Agent first located object, then performed required transformations (clean/heat/slice), then moved to target location",
-        "poor": "Agent moved objects without checking required properties, attempted actions out of order"
-      },
-      "prompt_template": "Evaluate the strategic thinking and planning. Consider: Is there evidence of logical subgoal decomposition? Are actions sequenced appropriately? Is exploration purposeful? Are dependencies between actions understood (e.g., must clean before moving)?"
+      "prompt_template": "Score the agent's strategy quality using the rubric bands. Cite concrete steps that justify the band."
     },
     "execution_quality": {
       "name": "Execution Quality",
@@ -68,17 +92,39 @@
     "reasoning_quality": {
       "name": "Reasoning Quality",
       "weight": 0.05,
-      "description": "Coherent reasoning traces, evidence of planning, appropriate error handling",
+      "description": "How coherent, grounded, and goal-aware the agent’s explanations are.",
       "scoring_guidelines": {
-        "high_score": "Clear, coherent reasoning at each step showing understanding and planning",
-        "medium_score": "Some reasoning present but inconsistent or unclear",
-        "low_score": "Little to no reasoning, reasoning doesn't match actions, or contradictory"
+        "9-10": [
+          "Explicitly references the goal and how each action contributes to it.",
+          "Reasoning is grounded in the current observation and adapts to failures.",
+          "No contradictions or hallucinations.",
+          "Reflects awareness of task structure and subgoals."
+        ],
+        "7-8": [
+          "Reasoning generally aligns with observations and actions.",
+          "References relevant objects and the goal most of the time.",
+          "Some minor generic or shallow explanations, but overall coherent."
+        ],
+        "5-6": [
+          "Reasoning is mostly coherent but shallow or repetitive.",
+          "Mentions the goal inconsistently.",
+          "Limited adaptation to new information.",
+          "Often restates obvious observations without deeper insight."
+        ],
+        "3-4": [
+          "Reasoning is generic or mismatched to the environment.",
+          "Rarely references the actual goal.",
+          "Little to no adaptation when actions fail.",
+          "Occasional contradictions or irrelevant details."
+        ],
+        "0-2": [
+          "Reasoning contradicts the environment or hallucinated objects.",
+          "Does not mention the goal at all.",
+          "Generic filler or nonsensical explanations.",
+          "No alignment between reasoning and executed action."
+        ]
       },
-      "examples": {
-        "good": "Reasoning traces show clear understanding of goal, current state, and next steps at each action",
-        "poor": "Empty reasoning fields or reasoning that doesn't explain the chosen action"
-      },
-      "prompt_template": "Evaluate the quality of reasoning traces. Consider: Is reasoning provided at each step? Does it explain the action choice? Is it coherent and consistent? Does it show understanding of the task state and goal? How does the agent handle errors or unexpected observations?"
+      "prompt_template": "Score the agent's reasoning quality using the rubric bands. Reference specific reasoning snippets."
     }
   },
   "qualitative_assessments": {

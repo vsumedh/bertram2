@@ -6,7 +6,7 @@ import typer
 from typing_extensions import Annotated # For Python 3.8+
 from src.green_agent.agent import start_green_agent
 from src.white_agent.agent import start_white_agent
-from launcher import launch_evaluation
+from launcher import launch_evaluation, benchmark_evaluation
 
 app = typer.Typer(help="TextWorld Agentify - Agent evaluation framework")
 
@@ -25,10 +25,20 @@ def green(
 def white(
     agent_name: str = "agent_card",
     host: Annotated[str, typer.Argument(envvar="HOST")] = "0.0.0.0",
-    port: Annotated[int, typer.Argument(envvar="AGENT_PORT")] = 8723
+    port: Annotated[int, typer.Argument(envvar="AGENT_PORT")] = 8723,
+    model: str = typer.Option("openai/gpt-4o", help="LLM model for the white agent"),
+    temperature: float = typer.Option(0.0, help="Sampling temperature"),
+    prompt_profile: str = typer.Option("standard", help="Prompt profile: standard|concise"),
 ):
     """Start the white agent (agent under test)."""
-    start_white_agent(agent_name=agent_name, host=host, port=port)
+    start_white_agent(
+        agent_name=agent_name,
+        host=host,
+        port=port,
+        model=model,
+        temperature=temperature,
+        prompt_profile=prompt_profile,
+    )
 
 
 @app.command()
@@ -52,6 +62,28 @@ def launch(
             green_port=green_port,
             white_host=white_host,
             white_port=white_port,
+        )
+    )
+
+@app.command()
+def benchmark(
+    tasks: str = typer.Option("4,6,5,7,1", help='Comma-separated task indices, e.g. "4,6,5,7,1"'),
+    max_steps: int = typer.Option(50, help="Max steps per task"),
+    green_host: str = "127.0.0.1",
+    green_port: int = 8722,
+    white_host: str = "127.0.0.1",
+):
+    """Run a small benchmark over multiple tasks and white-agent variants."""
+    # Parse comma-separated indices
+    parts = [p.strip() for p in tasks.split(",") if p.strip()]
+    task_indices = [int(p) for p in parts]
+    asyncio.run(
+        benchmark_evaluation(
+            task_indices=task_indices,
+            max_steps=max_steps,
+            green_host=green_host,
+            green_port=green_port,
+            white_host=white_host,
         )
     )
 

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import logging
-import tomllib
+import os
+try:
+    import tomllib as tomli  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli  # Backport for <=3.10
 from pathlib import Path
 from typing import Any, Dict
 
@@ -30,7 +34,7 @@ DEFAULT_CARD_PATH = ASSETS_DIR / "agent_card.toml"
 def load_agent_card_toml(card_path: Path = DEFAULT_CARD_PATH) -> Dict[str, Any]:
     """Load agent card from TOML file."""
     with card_path.open("rb") as fh:
-        return tomllib.load(fh)
+        return tomli.load(fh)
 
 
 def prepare_white_agent_card(url: str) -> AgentCard:
@@ -58,8 +62,11 @@ def prepare_white_agent_card(url: str) -> AgentCard:
 class TextWorldWhiteAgentExecutor(AgentExecutor):
     """White agent that plays TextWorld games using LLM policy."""
 
-    def __init__(self):
+    def __init__(self, *, model: str = "openai/gpt-4o", temperature: float = 0.0, prompt_profile: str = "standard"):
         self.ctx_id_to_messages = {}
+        self._model = model
+        self._temperature = float(temperature)
+        self._prompt_profile = prompt_profile
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Process observation and generate action."""
@@ -82,8 +89,8 @@ class TextWorldWhiteAgentExecutor(AgentExecutor):
             try:
                 llm_response = completion(
                     messages=messages,
-                    model="openai/gpt-4o",
-                    temperature=0.0,
+                    model=self._model,
+                    temperature=self._temperature,
                 )
                 response_text = llm_response.choices[0].message.content
                 messages.append({"role": "assistant", "content": response_text})
@@ -99,9 +106,13 @@ class TextWorldWhiteAgentExecutor(AgentExecutor):
         """Generate command for TextWorld."""
         # Add system message on first turn
         if len(messages) == 0:
-            system_msg = {
-                "role": "system",
-                "content": """You are an expert TextWorld agent completing household tasks.
+            if self._prompt_profile == "concise":
+                sys_content = """You are a concise, expert TextWorld agent.
+
+Respond ONLY with:
+<reasoning>brief rationale</reasoning><command>single command</command>"""
+            else:
+                sys_content = """You are an expert TextWorld agent completing household tasks.
 
 Common actions:
 - Navigation: "go to [location]"
@@ -112,7 +123,10 @@ Common actions:
 - Special: "clean [object] with [tool]", "heat [object] with [appliance]", "cool [object] with [appliance]"
 
 Respond with your reasoning first in <reasoning>...</reasoning> tags explaining why you chose this action, then your command in <command>...</command> tags.
-Format: <reasoning>Your thinking process here</reasoning><command>go to kitchen</command>""",
+Format: <reasoning>Your thinking process here</reasoning><command>go to kitchen</command>"""
+            system_msg = {
+                "role": "system",
+                "content": sys_content,
             }
             messages.append(system_msg)
 
@@ -123,8 +137,8 @@ Format: <reasoning>Your thinking process here</reasoning><command>go to kitchen<
         try:
             response = completion(
                 messages=messages,
-                model="openai/gpt-4o",
-                temperature=0.0,
+                model=self._model,
+                temperature=self._temperature,
             )
 
             assistant_content = response.choices[0].message.content
@@ -162,9 +176,35 @@ def start_white_agent(
     agent_name: str = "agent_card",
     host: str = "0.0.0.0",
     port: int = 9002,
+    model: str | None = None,
+    temperature: float | None = None,
+    prompt_profile: str | None = None,
 ) -> None:
     """Start the white agent HTTP service."""
-    logging.basicConfig(level=logging.INFO)
+    demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
+    # Tame LiteLLM console chatter as much as possible
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
+    os.environ.setdefault("LITELLM_VERBOSE", "false")
+    os.environ.setdefault("LITELLM_SUPPRESS_DEBUG", "1")
+    logging.basicConfig(level=(logging.WARNING if demo_mode else logging.INFO))
+    if demo_mode:
+        # Mute virtually all logs in demo mode; green agent will print the exchange
+        try:
+            logging.disable(logging.CRITICAL)
+        except Exception:
+            pass
+    # Suppress noisy third-party logs for demo-friendly output
+    # Suppress noisy third-party logs for demo-friendly output
+    for noisy in ("litellm", "httpx", "openai", "a2a", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        try:
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+        except Exception:
+            pass
+    # Also suppress observed LiteLLM logger name if present
+    try:
+        logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+    except Exception:
+        pass
     LOGGER.info("Starting TextWorld white agent on %s:%s", host, port)
 
     # Try to load from TOML, otherwise generate dynamically
@@ -177,7 +217,16 @@ def start_white_agent(
         url = f"http://{host}:{port}"
         card = prepare_white_agent_card(url)
 
-    executor = TextWorldWhiteAgentExecutor()
+    # Resolve overrides from args or env
+    resolved_model = model or os.environ.get("WHITE_MODEL", "openai/gpt-4o")
+    resolved_temp = float(temperature if temperature is not None else os.environ.get("WHITE_TEMPERATURE", 0.0))
+    resolved_profile = (prompt_profile or os.environ.get("WHITE_PROMPT_PROFILE", "standard")).strip().lower()
+
+    executor = TextWorldWhiteAgentExecutor(
+        model=resolved_model,
+        temperature=resolved_temp,
+        prompt_profile=resolved_profile,
+    )
     handler = DefaultRequestHandler(
         agent_executor=executor, task_store=InMemoryTaskStore()
     )
@@ -188,7 +237,7 @@ def start_white_agent(
 
     import uvicorn
 
-    uvicorn.run(application.build(), host=host, port=port)
+    uvicorn.run(application.build(), host=host, port=port, log_level="warning", access_log=False)
 
 
 __all__ = ["TextWorldWhiteAgentExecutor", "start_white_agent"]

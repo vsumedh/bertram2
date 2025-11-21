@@ -3,6 +3,7 @@
 import copy
 import os
 import time
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -179,6 +180,122 @@ class TextWorldEnvironment:
         Returns:
             Dictionary with episode_id, task_entry, initial_observation, goal
         """
+        def _as_str(val: Any) -> str:
+            if isinstance(val, list):
+                return " ".join(str(x) for x in val if x is not None).strip()
+            return str(val).strip() if val is not None else ""
+
+        def _is_generic_goal(text: str) -> bool:
+            t = text.lower()
+            # Heuristic: generic family names tend to be short and include 'task' or 'obj'
+            if len(t) < 40 and (" task" in t or "task " in t):
+                return True
+            if " obj " in t or t.endswith(" obj") or "obj in light" in t:
+                return True
+            return False
+
+        def _normalize_goal_text(info_map: Dict[str, Any], text: str) -> str:
+            """Normalize goal to a specific, human-friendly imperative if possible."""
+            goal = text.strip()
+            low = goal.lower()
+
+            # Remove trailing/leading 'task' wording
+            goal = re.sub(r"\btask\b", "", goal, flags=re.IGNORECASE).strip(" .")
+
+            # Replace generic 'obj/object' with a specific object if discoverable
+            potential_keys = [
+                "extra.goal_object",
+                "extra.object",
+                "extra.objects",
+                "goal_object",
+                "target_object",
+                "object",
+                "objects",
+            ]
+
+            # Helper to get nested keys like "extra.goal_object"
+            def _get_nested(m: Dict[str, Any], dotted: str) -> Any:
+                parts = dotted.split(".")
+                cur: Any = m
+                for p in parts:
+                    if isinstance(cur, dict) and p in cur:
+                        cur = cur[p]
+                    else:
+                        return None
+                return cur
+
+            obj = None
+            for key in potential_keys:
+                val = _get_nested(info_map, key)
+                if isinstance(val, list) and val:
+                    obj = str(val[0]).strip()
+                elif isinstance(val, str) and val.strip():
+                    obj = val.strip()
+                if obj:
+                    break
+
+            if obj:
+                # Common replacements
+                goal = re.sub(r"\bobj(ect)?\b", obj, goal, flags=re.IGNORECASE)
+                goal = goal.replace("Obj", obj).replace("OBJ", obj)
+
+            # Prefer "under light" phrasing
+            goal = re.sub(r"\bin light\b", "under light", goal, flags=re.IGNORECASE)
+            goal = re.sub(r"\bwith\s+the\s+desklamp\b", "under light", goal, flags=re.IGNORECASE)
+
+            # Normalize whitespace and capitalization minimally
+            goal = re.sub(r"\s+", " ", goal).strip()
+            return goal
+
+        def _pick_best_goal(info_map: Dict[str, Any], task_entry_map: Dict[str, str]) -> str:
+            # Candidate keys to try in order of typical specificity
+            candidate_keys = [
+                "extra.full_goal",
+                "extra.human_goal",
+                "extra.human_goals",
+                "extra.goal",
+                "goal",
+                "extra.instruction",
+                "instruction",
+                "objective",
+                "task_description",
+                "extra.description",
+                "description",
+            ]
+
+            # Flatten nested keys like "extra.goal"
+            def _get_nested(m: Dict[str, Any], dotted: str) -> Any:
+                parts = dotted.split(".")
+                cur: Any = m
+                for p in parts:
+                    if isinstance(cur, dict) and p in cur:
+                        cur = cur[p]
+                    else:
+                        return None
+                return cur
+
+            candidates: list[str] = []
+            for key in candidate_keys:
+                val = _get_nested(info_map, key)
+                if val is None and key in ("description", "extra.description"):
+                    val = task_entry_map.get("description")
+                s = _as_str(val)
+                if s:
+                    candidates.append(s)
+
+            # If nothing found, fallback to task entry description or a default
+            if not candidates:
+                fallback = task_entry_map.get("description") or "Complete the task"
+                return _normalize_goal_text(info_map, fallback)
+
+            # Prefer non-generic, then choose longest
+            non_generic = [c for c in candidates if not _is_generic_goal(c)]
+            if non_generic:
+                best = max(non_generic, key=len)
+                return _normalize_goal_text(info_map, best)
+            best = max(candidates, key=len)
+            return _normalize_goal_text(info_map, best)
+
         task_entry = load_task_from_list(
             self._task_config.task_index, self._task_config.resolve_task_list_path()
         )
@@ -215,16 +332,8 @@ class TextWorldEnvironment:
         observations, info = self._env.reset()
         observation = observations[0]
 
-        # Extract goal
-        if "extra.goal" in info:
-            goal_value = info["extra.goal"]
-        elif "goal" in info:
-            goal_value = info["goal"]
-        else:
-            goal_value = task_entry.get("description") or "Complete the task"
-
-        if isinstance(goal_value, list) and goal_value:
-            goal_value = goal_value[0]
+        # Extract goal with heuristics favoring specific over family name
+        goal_value = _pick_best_goal(info, task_entry)
 
         # Initialize state
         self._goal = goal_value

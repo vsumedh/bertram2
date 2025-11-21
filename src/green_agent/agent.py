@@ -6,7 +6,11 @@ import json
 import logging
 import re
 import time
-import tomllib
+try:
+    import tomllib as tomli  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli  # Backport for <=3.10
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +54,7 @@ def load_agent_card_toml(
     if not card_path.exists():
         card_path = DEFAULT_AGENT_CARD_TOML
     with card_path.open("rb") as fh:
-        return tomllib.load(fh)
+        return tomli.load(fh)
 
 
 class TextWorldGreenAgentExecutor(AgentExecutor):
@@ -78,6 +82,8 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
             )
             self._rubric = None
             self._evaluator = None
+        # Demo mode: only print human-friendly green/white exchanges
+        self._demo = os.environ.get("DEMO_MODE", "0") == "1"
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Main execution loop for evaluation."""
@@ -90,6 +96,7 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
 
         white_agent_url = tags["white_agent_url"]
         raw_task_config = tags.get("task_config") or tags.get("env_config") or "{}"
+        benchmark_mode = tags.get("benchmark_mode", "0").strip() == "1"
         try:
             task_config = TaskConfig.from_payload(json.loads(raw_task_config))
         except json.JSONDecodeError as exc:
@@ -106,6 +113,49 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
         observation = setup_payload["initial_observation"]
 
         trajectory: List[Dict[str, Any]] = []
+
+        # Capture a specific task string from the initial observation if present
+        extracted_task_text = None
+        try:
+            _m = re.search(r"Your task is to:\s*(.+)", observation, flags=re.IGNORECASE)
+            if _m:
+                extracted_task_text = _m.group(1).strip()
+        except Exception:
+            extracted_task_text = None
+
+        # Helper to avoid noisy "Queue is closed" warnings
+        async def _safe_enqueue(text: str) -> None:
+            try:
+                await event_queue.enqueue_event(
+                    new_agent_text_message(text, context_id=context.context_id)
+                )
+            except Exception:
+                # Silently ignore if event queue is closed or unavailable
+                LOGGER.debug("Event queue not available to enqueue message.")
+
+        # Task Introduction (concise)
+        actions_hint = "- go to <recep>, open/close <recep>, take/move <obj>, inventory, look, examine"
+        if self._demo and not benchmark_mode:
+            print("— Task Introduction —")
+            print(f"- What is the task? {goal}")
+            print("- What does the environment look like?")
+            print(observation)
+            print(f"- What actions can each agent take? {actions_hint}")
+        else:
+            LOGGER.info("Task Introduction:")
+            LOGGER.info(" - What is the task? %s", (goal[:200] + ("..." if len(goal) > 200 else "")))
+            LOGGER.info(
+                " - What does the environment look like? %s",
+                (observation[:200].replace("\n", " ") + ("..." if len(observation) > 200 else "")),
+            )
+            LOGGER.info(" - What actions can the white agent take? %s", actions_hint)
+
+        await _safe_enqueue(
+            "Task Introduction\n"
+            f"- What is the task? {goal}\n"
+            f"- What does the environment look like? {observation[:300]}{'...' if len(observation) > 300 else ''}\n"
+            f"- What actions can each agent take? {actions_hint}"
+        )
 
         await event_queue.enqueue_event(
             new_agent_text_message(
@@ -124,7 +174,7 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
 
         try:
             for step in range(task_config.max_steps):
-                LOGGER.info(f"Beginning step {step + 1}/{task_config.max_steps}")
+                LOGGER.info(f"Step {step + 1}/{task_config.max_steps} - begin")
 
                 # Format message for white agent
                 if step == 0:
@@ -133,15 +183,46 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
                     message = self._format_observation_message(current_observation)
 
                 # Log outgoing message to white agent
-                LOGGER.info(
-                    f"[Green→White] Step {step + 1}/{task_config.max_steps} - "
-                    f"Sending message to white agent at {white_agent_url} "
-                    f"(context_id={white_context_id})"
-                )
-                LOGGER.info(
-                    f"[Green→White] Step {step + 1}/{task_config.max_steps} - "
-                    f"Message content:\n{message}"
-                )
+                if not self._demo or benchmark_mode:
+                    LOGGER.info(
+                        f"[Green→White] Step {step + 1}/{task_config.max_steps} - "
+                        f"Sending message to white agent at {white_agent_url} "
+                        f"(context_id={white_context_id})"
+                    )
+                    LOGGER.debug(
+                        f"[Green→White] Step {step + 1}/{task_config.max_steps} - "
+                        f"Message content:\n{message}"
+                    )
+                else:
+                    # Human-readable green output
+                    if step == 0:
+                        # Styling
+                        BOLD = "\033[1m"
+                        # Prefer 256-color bright green; falls back fine on most terminals
+                        GREEN_FG = "\033[38;5;46m"
+                        RESET = "\033[0m"
+                        DIV = "-" * 80
+                        step_header = f"{BOLD}Step {step + 1}{RESET}"
+                        print(DIV)
+                        print("")  # single blank line between divider and step header
+                        print(step_header)
+                        print("")  # blank line after step header
+                        print(f"{BOLD}{GREEN_FG}GREEN{RESET}:")
+                        print(f"Observation: {BOLD}{observation}{RESET}")
+                        print("")  # spacing after green block
+                    else:
+                        BOLD = "\033[1m"
+                        GREEN_FG = "\033[38;5;46m"
+                        RESET = "\033[0m"
+                        DIV = "-" * 80
+                        step_header = f"{BOLD}Step {step + 1}{RESET}"
+                        print(DIV)
+                        print("")  # single blank line between divider and step header
+                        print(step_header)
+                        print("")  # blank line after step header
+                        print(f"{BOLD}{GREEN_FG}GREEN{RESET}:")
+                        print(f"Observation: {BOLD}{current_observation}{RESET}")
+                        print("")  # spacing after green block
 
                 # Send to white agent and get command
                 try:
@@ -163,42 +244,59 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
                     )
 
                     # Log incoming message from white agent
-                    LOGGER.info(
-                        f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
-                        f"Received response from white agent "
-                        f"(message_id={white_response.message_id}, "
-                        f"context_id={white_response.context_id})"
-                    )
-                    LOGGER.info(
-                        f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
-                        f"Response content:\n{response_text}"
-                    )
+                    if not self._demo or benchmark_mode:
+                        LOGGER.info(
+                            f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
+                            f"Received response from white agent "
+                            f"(message_id={white_response.message_id}, "
+                            f"context_id={white_response.context_id})"
+                        )
+                        LOGGER.debug(
+                            f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
+                            f"Response content:\n{response_text}"
+                        )
 
                     reasoning, action = self._parse_command(white_response)
 
-                    # Log reasoning and command separately
-                    LOGGER.info(
-                        f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
-                        f"Reasoning: {reasoning if reasoning else '(none)'}"
-                    )
-                    LOGGER.info(
-                        f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
-                        f"Command: '{action}'"
-                    )
+                    if self._demo:
+                        BOLD = "\033[1m"
+                        RESET = "\033[0m"
+                        print(f"{BOLD}WHITE{RESET}:")
+                        if reasoning:
+                            _rs = reasoning[:300].replace("\n", " ")
+                            print(f"Reasoning: {_rs}{'...' if len(reasoning) > 300 else ''}")
+                        print(f"Command: {BOLD}{action}{RESET}")
+                    else:
+                        # Log reasoning and command separately
+                        LOGGER.debug(
+                            f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
+                            f"Reasoning: {reasoning if reasoning else '(none)'}"
+                        )
+                        LOGGER.info(
+                            f"[White→Green] Step {step + 1}/{task_config.max_steps} - "
+                            f"Command: '{action}'"
+                        )
 
                 except Exception as exc:
                     consecutive_failures += 1
-                    LOGGER.error(
-                        f"White agent communication error (failure #{consecutive_failures}): {exc}",
-                        exc_info=True,
-                    )
+                    if self._demo:
+                        # Quiet, human-friendly note in demo mode
+                        print("Note: temporary communication issue with White agent. Retrying...")
+                    else:
+                        LOGGER.error(
+                            f"White agent communication error (failure #{consecutive_failures}): {exc}",
+                            exc_info=True,
+                        )
 
                     # Fail episode if white agent is consistently unresponsive
                     if consecutive_failures >= max_consecutive_failures:
-                        LOGGER.error(
-                            f"White agent failed {consecutive_failures} consecutive times. "
-                            f"Terminating episode early."
-                        )
+                        if self._demo:
+                            print("White agent became unavailable. Ending episode early.")
+                        else:
+                            LOGGER.error(
+                                f"White agent failed {consecutive_failures} consecutive times. "
+                                f"Terminating episode early."
+                            )
                         await event_queue.enqueue_event(
                             new_agent_text_message(
                                 f"Episode terminated: White agent unresponsive after "
@@ -233,12 +331,7 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
                     LOGGER.error(f"Environment error: {exc}", exc_info=True)
                     action_valid = False
                     action_error = str(exc)
-                    await event_queue.enqueue_event(
-                        new_agent_text_message(
-                            f"Environment error: {exc}",
-                            context_id=context.context_id,
-                        )
-                    )
+                    await _safe_enqueue(f"Environment error: {exc}")
                     break
 
                 step_duration = time.time() - step_start_time
@@ -273,12 +366,33 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
                 current_observation = step_result.observation
 
                 # Progress update
-                await event_queue.enqueue_event(
-                    new_agent_text_message(
-                        f"Step {step + 1}: '{action}' → reward={step_result.reward:.2f}",
-                        context_id=context.context_id,
-                    )
+                await _safe_enqueue(
+                    f"Step {step + 1}: '{action}' → reward={step_result.reward:.2f}, done={step_result.done}"
                 )
+                # Concise per-step summary at INFO for console
+                if not self._demo or benchmark_mode:
+                    LOGGER.info(
+                        f"Step {step + 1}: action='{action}', valid={action_valid}, "
+                        f"reward={step_result.reward:.2f}, done={step_result.done}, "
+                        f"obs_changed={observation_changed}"
+                    )
+                else:
+                    # Human-readable per-step outcome and task status
+                    success_now = bool(env.metrics().get("success", False))
+                    status_str = "SUCCESSFUL ✅" if success_now else "unsuccessful ❌"
+                    print("")  # spacing before status
+                    # Prefer task text from the observation if present: "Your task is to: ..."
+                    _obs_for_task = current_observation if current_observation else observation
+                    _task_match = re.search(r"Your task is to:\s*(.+)", _obs_for_task, flags=re.IGNORECASE)
+                    if _task_match:
+                        _task_text = _task_match.group(1).strip()
+                    elif extracted_task_text:
+                        _task_text = extracted_task_text
+                    else:
+                        _task_text = goal
+                    print(f"Task: {_task_text}")
+                    print(f"Status: {status_str}")
+                    print("")  # spacing after status
 
                 if step_result.done:
                     LOGGER.info(f"Episode complete (done=True) after {step + 1} steps")
@@ -291,77 +405,257 @@ class TextWorldGreenAgentExecutor(AgentExecutor):
             success = metrics.get("success", False)
             step_count = metrics.get("step_count", 0)
             LOGGER.info(f"Episode metrics - success: {success}, steps: {step_count}")
+            if self._demo and trajectory:
+                # Print task status summary without low-level outcome
+                last = trajectory[-1]
+                success_now = bool(last.get("done") and success)
+                status_str = "SUCCESSFUL ✅" if success_now else "unsuccessful ❌"
+                print(f"Task: {goal}")
+                print(f"Status: {status_str}")
+                print("")
 
-            # Evaluate trajectory using LLM judge
-            if self._evaluator:
-                LOGGER.info("Rating trajectory (quick)")
-                rating_quick = await self._evaluator.rate_trajectory_quick(
-                    goal, trajectory, success
-                )
-                LOGGER.info(f"Quick rating: {rating_quick}")
-
-                LOGGER.info("Rating trajectory (detailed)")
-                score_breakdown = await self._evaluator.rate_trajectory_detailed(
-                    goal, trajectory, success
-                )
-                LOGGER.info(f"Detailed rating: {score_breakdown.overall_rating:.1f}")
-
-                # Assess reasoning traces if enabled
-                reasoning_assessment = None
-                if self._rubric and self._rubric.reasoning_trace_analysis.get(
-                    "enabled", False
-                ):
-                    LOGGER.info("Assessing reasoning traces")
-                    reasoning_assessment = (
-                        await self._evaluator.assess_reasoning_traces(goal, trajectory)
+            # Assemble report
+            if not benchmark_mode:
+                # Evaluate trajectory using LLM judge (enhanced report)
+                if self._evaluator:
+                    LOGGER.info("Rating trajectory (quick)")
+                    rating_quick = await self._evaluator.rate_trajectory_quick(
+                        goal, trajectory, success
                     )
-                    LOGGER.info("Reasoning trace assessment complete")
+                    LOGGER.info(f"Quick rating: {rating_quick}")
 
-                # Generate enhanced report
-                report = self._generate_enhanced_report(
-                    success,
-                    step_count,
-                    task_config.max_steps,
-                    rating_quick,
-                    score_breakdown,
-                    reasoning_assessment,
-                )
+                    LOGGER.info("Rating trajectory (detailed)")
+                    score_breakdown = await self._evaluator.rate_trajectory_detailed(
+                        goal, trajectory, success
+                    )
+                    LOGGER.info(f"Detailed rating: {score_breakdown.overall_rating:.1f}")
+
+                    # Assess reasoning traces if enabled
+                    reasoning_assessment = None
+                    if self._rubric and self._rubric.reasoning_trace_analysis.get(
+                        "enabled", False
+                    ):
+                        LOGGER.info("Assessing reasoning traces")
+                        reasoning_assessment = (
+                            await self._evaluator.assess_reasoning_traces(goal, trajectory)
+                        )
+                        LOGGER.info("Reasoning trace assessment complete")
+
+                    # Demo-formatted report with longer Strategy/Reasoning narratives
+                    report = self._generate_demo_evaluation_report_v2(
+                        goal,
+                        success=success,
+                        step_count=step_count,
+                        max_steps=task_config.max_steps,
+                        score_breakdown=score_breakdown,
+                        trajectory=trajectory,
+                    )
+                else:
+                    # Fallback to old evaluation method
+                    LOGGER.info("Using fallback evaluation (rubric not loaded)")
+                    rating_quick = await self._rate_trajectory_quick(
+                        goal, trajectory, success
+                    )
+                    rating_detailed, reasoning = await self._rate_trajectory_detailed(
+                        goal, trajectory, success
+                    )
+                    success_score = 1 if success else 0
+                    final_score = (
+                        success_score + step_count + rating_quick + rating_detailed
+                    )
+
+                    emoji = "✅" if success else "❌"
+                    report = (
+                        f"\nEvaluation Complete {emoji}\n"
+                        f"{'=' * 50}\n"
+                        f"Success: {success}\n"
+                        f"Steps: {step_count} / {task_config.max_steps}\n"
+                        f"Trajectory Ratings:\n"
+                        f"  Quick Rating: {rating_quick:.1f}/10\n"
+                        f"  Detailed Rating: {rating_detailed:.1f}/10\n"
+                        f"  Reasoning: {reasoning[:300]}{'...' if len(reasoning) > 300 else ''}\n"
+                        f"\nFinal Evaluation Score: {final_score:.1f}\n"
+                        f"  (Success: {success_score} + Steps: {step_count} + "
+                        f"Quick Rating: {rating_quick:.1f} + Detailed Rating: {rating_detailed:.1f})\n"
+                    )
             else:
                 # Fallback to old evaluation method
-                LOGGER.info("Using fallback evaluation (rubric not loaded)")
-                rating_quick = await self._rate_trajectory_quick(
-                    goal, trajectory, success
-                )
-                rating_detailed, reasoning = await self._rate_trajectory_detailed(
-                    goal, trajectory, success
-                )
-                success_score = 1 if success else 0
-                final_score = (
-                    success_score + step_count + rating_quick + rating_detailed
-                )
-
-                emoji = "✅" if success else "❌"
-                report = (
-                    f"\nEvaluation Complete {emoji}\n"
-                    f"{'=' * 50}\n"
-                    f"Success: {success}\n"
-                    f"Steps: {step_count} / {task_config.max_steps}\n"
-                    f"Trajectory Ratings:\n"
-                    f"  Quick Rating: {rating_quick:.1f}/10\n"
-                    f"  Detailed Rating: {rating_detailed:.1f}/10\n"
-                    f"  Reasoning: {reasoning[:300]}{'...' if len(reasoning) > 300 else ''}\n"
-                    f"\nFinal Evaluation Score: {final_score:.1f}\n"
-                    f"  (Success: {success_score} + Steps: {step_count} + "
-                    f"Quick Rating: {rating_quick:.1f} + Detailed Rating: {rating_detailed:.1f})\n"
-                )
+                # Benchmark-mode per-task report (pre-task, preview, post-task)
+                # Determine task text from observation or goal
+                task_text_match = re.search(r"Your task is to:\s*(.+)", observation, flags=re.IGNORECASE)
+                task_text = task_text_match.group(1).strip() if task_text_match else goal
+                lines: list[str] = []
+                lines.append(f'================ TASK: "{task_text}" ================')
+                lines.append("")
+                lines.append("Environment:")
+                lines.append(observation)
+                lines.append("")
+                lines.append(f"Max steps: {task_config.max_steps}")
+                lines.append("")
+                lines.append("[Step Preview]")
+                # First 2 and last 2 WHITE actions
+                first_two = trajectory[:2]
+                last_two = trajectory[-2:] if len(trajectory) > 2 else []
+                for item in first_two:
+                    lines.append(f"Step {item.get('step')}: {item.get('action')}   (WHITE)")
+                if len(trajectory) > 4:
+                    lines.append("...")
+                for item in last_two:
+                    # Avoid duplicating if overlap with first_two
+                    if item not in first_two:
+                        lines.append(f"Step {item.get('step')}: {item.get('action')}   (WHITE)")
+                lines.append("")
+                lines.append("Post-Task:")
+                lines.append(f"Success: {success}")
+                lines.append(f"Steps Used: {step_count} / {task_config.max_steps}")
+                lines.append("-" * 64)
+                report = "\n".join(lines)
 
             LOGGER.info("Sending final report")
-            await event_queue.enqueue_event(
-                new_agent_text_message(report, context_id=context.context_id)
-            )
+            await _safe_enqueue(report)
+            if self._demo:
+                print("\n— Evaluation —\n")
+                print(report)
 
             LOGGER.info("Episode evaluation complete, resetting environment")
             env.reset()
+
+    @staticmethod
+    def _analyze_trajectory_for_strategy(trajectory: List[Dict[str, Any]], goal: str) -> str:
+        """Heuristic strategy analysis to produce a longer narrative."""
+        total_steps = len(trajectory)
+        if total_steps == 0:
+            return "No actions taken; strategy cannot be assessed."
+        actions = [str(x.get("action", "")).strip() for x in trajectory]
+        # Count navigation, interactions, and revisits of 'go to'
+        go_to_targets: list[str] = []
+        for a in actions:
+            m = re.match(r"^go to (.+)$", a)
+            if m:
+                go_to_targets.append(m.group(1))
+        unique_nav = len(set(go_to_targets)) if go_to_targets else 0
+        revisits = max(0, len(go_to_targets) - unique_nav) if go_to_targets else 0
+        open_actions = sum(1 for a in actions if a.startswith("open "))
+        take_actions = sum(1 for a in actions if a.startswith("take "))
+        put_actions = sum(1 for a in actions if a.startswith("put ") or a.startswith("move "))
+        examine_actions = sum(1 for a in actions if a.startswith("examine") or a == "look")
+        # Observation change rate as a proxy for progress/adaptation
+        changed = sum(1 for x in trajectory if x.get("observation_changed", False))
+        change_rate = changed / float(total_steps)
+        # Compose
+        parts: list[str] = []
+        parts.append(f"The trajectory contains {total_steps} actions with {unique_nav} unique navigation targets and {revisits} revisits.")
+        parts.append(f"It balances navigation with interactions (open={open_actions}, take={take_actions}, put/move={put_actions}).")
+        if examine_actions > 0:
+            parts.append(f"Exploration uses inspections ({examine_actions} examine/look actions) to gather state before acting.")
+        if change_rate >= 0.6:
+            parts.append("Most actions lead to state changes, suggesting purposeful progression rather than random wandering.")
+        elif change_rate >= 0.3:
+            parts.append("A moderate portion of actions affect the environment, indicating some focused progression with detours.")
+        else:
+            parts.append("Few actions change the environment, indicating inefficiency or repeated non-progressing actions.")
+        parts.append("Overall, the sequence appears " +
+                     ("well prioritized and adaptive" if change_rate >= 0.6 else
+                      "somewhat systematic but inconsistently prioritized" if change_rate >= 0.3 else
+                      "loosely organized with limited prioritization"))
+        return " ".join(parts)
+
+    @staticmethod
+    def _analyze_trajectory_for_reasoning(trajectory: List[Dict[str, Any]], goal: str) -> str:
+        """Heuristic reasoning-quality analysis to produce a longer narrative."""
+        if not trajectory:
+            return "No reasoning provided."
+        reasonings = [str(x.get("reasoning", "")).strip() for x in trajectory if str(x.get("reasoning", "")).strip()]
+        coverage = len(reasonings) / float(len(trajectory))
+        mentions_goal = sum(1 for r in reasonings if any(tok in r.lower() for tok in ["goal", "task", "book", "salt", "lamp"]))  # coarse proxy
+        coherence = sum(1 for r in reasonings if len(r) >= 20) / float(len(reasonings)) if reasonings else 0.0
+        parts: list[str] = []
+        parts.append(f"Reasoning coverage is {coverage:.0%} of steps; longer explanations occur in {coherence:.0%} of provided entries.")
+        if mentions_goal / float(len(reasonings) or 1) >= 0.5:
+            parts.append("Many entries reference the goal or task objects directly, showing goal awareness.")
+        else:
+            parts.append("Few entries reference the goal explicitly; explanations trend generic.")
+        parts.append("Overall, the reasoning is " +
+                     ("coherent and grounded with frequent goal references" if coherence >= 0.6 and coverage >= 0.6 else
+                      "partly coherent with some grounding but intermittently generic" if coherence >= 0.4 else
+                      "brief and generic, with limited grounding in observations"))
+        return " ".join(parts)
+
+    @staticmethod
+    def _generate_demo_evaluation_report_v2(
+        goal: str,
+        *,
+        success: bool,
+        step_count: int,
+        max_steps: int,
+        score_breakdown,
+        trajectory: List[Dict[str, Any]],
+    ) -> str:
+        """Demo-friendly evaluation block with longer Strategy/Reasoning narratives."""
+        def _cat_score(key: str, default: float | None = None) -> float | None:
+            try:
+                cr = score_breakdown.category_ratings.get(key) if score_breakdown and score_breakdown.category_ratings else None
+                return float(cr.score) if cr else default
+            except Exception:
+                return default
+
+        correctness_score = 10.0 if success else 0.0
+        correctness_reasoning = (
+            "Env reports success (goal state reached)." if success
+            else "Env reports failure (goal state not reached)."
+        )
+        correctness_calc = f"success == {'True' if success else 'False'} → score = {correctness_score:.1f} / 10"
+
+        ratio = (step_count / float(max_steps)) if max_steps > 0 else 1.0
+        ratio = max(0.0, min(1.0, ratio))
+        efficiency_score = max(0.0, 10.0 * (1.0 - ratio))
+        efficiency_reasoning = f"Uses {step_count} of {max_steps} budgeted steps → " + (
+            "efficient path." if ratio < 0.4 else
+            "moderate wandering." if ratio < 0.7 else
+            "heavy wandering."
+        )
+        efficiency_calc = f"ratio = {step_count} / {max_steps} = {ratio:.2f}\n    score = 10 × (1 − {ratio:.2f}) = {efficiency_score:.1f} / 10"
+
+        strategy_score = _cat_score("strategy_quality", 5.0) or 5.0
+        strategy_reasoning = TextWorldGreenAgentExecutor._analyze_trajectory_for_strategy(trajectory, goal)
+
+        reasoning_quality_score = _cat_score("reasoning_quality", 5.0) or 5.0
+        reasoning_quality_reasoning = TextWorldGreenAgentExecutor._analyze_trajectory_for_reasoning(trajectory, goal)
+
+        weighted_overall = None
+        try:
+            if score_breakdown:
+                weighted_overall = float(score_breakdown.compute_weighted_overall())
+        except Exception:
+            weighted_overall = None
+        if weighted_overall is None:
+            weighted_overall = (correctness_score + efficiency_score + strategy_score + reasoning_quality_score) / 4.0
+
+        lines: list[str] = []
+        lines.append("--- GREEN AGENT EVALUATION ---")
+        lines.append("")
+        lines.append(f"Task Success: {'YES' if success else 'NO'}")
+        lines.append(f"Steps Used: {step_count} / {max_steps}")
+        lines.append("")
+        lines.append("Correctness / Task Completion")
+        lines.append(f"  Reasoning: {correctness_reasoning}")
+        lines.append(f"  Calculation: {correctness_calc}")
+        lines.append("")
+        lines.append("Efficiency (Step Budget)")
+        lines.append(f"  Reasoning: {efficiency_reasoning}")
+        lines.append("  Calculation:")
+        lines.append(f"    {efficiency_calc}")
+        lines.append("")
+        lines.append("Strategy Quality")
+        lines.append(f"  Reasoning: {strategy_reasoning}")
+        lines.append(f"  Score: {strategy_score:.1f} / 10   (rubric-based)")
+        lines.append("")
+        lines.append("Reasoning Quality")
+        lines.append(f"  Reasoning: {reasoning_quality_reasoning}")
+        lines.append(f"  Score: {reasoning_quality_score:.1f} / 10   (rubric-based)")
+        lines.append("")
+        lines.append(f"Overall Rating (weighted): {weighted_overall:.1f} / 10")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_initial_message(goal: str, observation: str) -> str:
@@ -689,7 +983,41 @@ def start_green_agent(
     port: int = 9001,
 ) -> None:
     """Start the green agent HTTP service."""
-    logging.basicConfig(level=logging.INFO)
+    demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
+    # Tame LiteLLM console chatter as much as possible
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
+    os.environ.setdefault("LITELLM_VERBOSE", "false")
+    os.environ.setdefault("LITELLM_SUPPRESS_DEBUG", "1")
+    level = (
+        logging.DEBUG
+        if os.environ.get("GREEN_VERBOSE") == "1"
+        else (logging.WARNING if demo_mode else logging.INFO)
+    )
+    logging.basicConfig(level=level)
+    if demo_mode:
+        # Silence all logging; demo prints are handled via print()
+        try:
+            logging.disable(logging.CRITICAL)
+        except Exception:
+            pass
+    # Suppress noisy third-party logs for demo-friendly output
+    for noisy in (
+        "LiteLLM",  # observed logger name in output
+        "litellm",
+        "httpx",
+        "openai",
+        "a2a.server.events.event_queue",  # suppress queue-closed warnings
+        "a2a",
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+    ):
+        try:
+            # Use ERROR for event_queue, WARNING for others
+            target_level = logging.ERROR if noisy.endswith("event_queue") else logging.WARNING
+            logging.getLogger(noisy).setLevel(target_level)
+        except Exception:
+            pass
     LOGGER.info("Starting TextWorld green agent on %s:%s", host, port)
 
     agent_card_dict = load_agent_card_toml(agent_name)
@@ -707,7 +1035,7 @@ def start_green_agent(
 
     import uvicorn
 
-    uvicorn.run(application.build(), host=host, port=port)
+    uvicorn.run(application.build(), host=host, port=port, log_level="warning", access_log=False)
 
 
 __all__ = ["TextWorldGreenAgentExecutor", "start_green_agent"]
