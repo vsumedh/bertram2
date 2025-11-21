@@ -17,10 +17,13 @@ This framework evaluates white agents' ability to complete household tasks in Te
 pip install -r requirements.txt
 ```
 
+
 Or using `uv`:
 ```bash
 uv pip install -r requirements.txt
 ```
+
+Also make sure agentbeats is installed correctly.
 
 ## Configuration
 
