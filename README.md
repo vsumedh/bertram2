@@ -17,10 +17,13 @@ This framework evaluates white agents' ability to complete household tasks in Te
 pip install -r requirements.txt
 ```
 
+
 Or using `uv`:
 ```bash
 uv pip install -r requirements.txt
 ```
+
+Also make sure agentbeats is installed correctly.
 
 ## Configuration
 
@@ -87,6 +90,24 @@ python main.py white --host 0.0.0.0 --port 9002
 ```bash
 python launcher.py
 ```
+
+### Running green and white agents evaluations locally using A2A protocols
+
+We have full support for running agent evaluations locally, i.e. without using the agentbeats online platform. Green and white agents communicate correctly via the A2A protocol. 
+
+Steps:
+1. Ensure agentbeats is installed (e.g. via `pip install earthshaker`) and available locally
+2. All requirements in `requirements.txt` are installed, including alfworld and the datasets
+3. Run the assessments locally using the command `python3 launcher.py`
+
+You should see the evaluation run as in the following screenshot:
+
+<img width="1197" height="686" alt="Screenshot 2025-11-20 at 8 38 58 PM" src="https://github.com/user-attachments/assets/1d24ad75-531d-4e0b-a3b8-3e057e2ef008" />
+
+Finally, evaluations are performed as shown in the screenshot below:
+
+<img width="1115" height="63" alt="Screenshot 2025-11-20 at 8 45 30 PM" src="https://github.com/user-attachments/assets/2dbb7022-79d8-4ad6-bd45-0f73290375af" />
+
 
 ### Integrating with agentbeats
 
