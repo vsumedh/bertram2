@@ -46,6 +46,30 @@ Launch both agents and run evaluation:
 python main.py launch --task-index 0 --max-steps 30
 ```
 
+### Fast White Agent (expert plan shortcut)
+
+Skip the LLM white agent and use ALFWorld's expert plan to finish tasks quickly (useful for green-agent development and demos):
+
+```bash
+FAST_WHITE=1 python main.py launch --task-index 0 --max-steps 30
+```
+
+For benchmarks:
+```bash
+FAST_WHITE=1 python main.py benchmark --tasks 0,1,2 --max-steps 30
+```
+Note: fast mode still runs real environment steps but does not start the LLM white agent.
+
+### 5-task assessment (fast white, fixed scoring)
+
+Run the 5-task evaluator (default tasks 4,6,5,7,1) with rubric-based scoring and aggregate summary:
+
+```bash
+FAST_WHITE=1 python main.py assess --tasks 4,6,5,7,1 --max-steps 50
+```
+
+This prints per-task evaluation blocks (correctness, efficiency, strategy, reasoning, weighted overall) and a batch summary (success rate, mean steps, per-criterion averages).
+
 ### Start Agents Separately
 
 Green agent (evaluation manager):

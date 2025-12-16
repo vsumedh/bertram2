@@ -9,7 +9,7 @@ try:
 except ModuleNotFoundError:
     import tomli  # Backport for <=3.10
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import dotenv
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -19,8 +19,7 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils import new_agent_text_message
-from litellm import completion
-
+from ..utils.vllm_client import VLLMClient, VLLMConfig
 from ..utils.messaging import parse_tags
 
 
@@ -62,11 +61,22 @@ def prepare_white_agent_card(url: str) -> AgentCard:
 class TextWorldWhiteAgentExecutor(AgentExecutor):
     """White agent that plays TextWorld games using LLM policy."""
 
-    def __init__(self, *, model: str = "openai/gpt-4o", temperature: float = 0.0, prompt_profile: str = "standard"):
+    def __init__(
+        self,
+        *,
+        model: str = "Qwen/Qwen2.5-7B-Instruct",
+        temperature: float = 0.0,
+        prompt_profile: str = "standard",
+        vllm_base_url: Optional[str] = None,
+    ):
         self.ctx_id_to_messages = {}
         self._model = model
         self._temperature = float(temperature)
         self._prompt_profile = prompt_profile
+        self._vllm_client = VLLMClient(VLLMConfig(
+            base_url=vllm_base_url or os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            model=model,
+        ))
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Process observation and generate action."""
@@ -87,12 +97,11 @@ class TextWorldWhiteAgentExecutor(AgentExecutor):
             # Generic response
             messages.append({"role": "user", "content": user_input})
             try:
-                llm_response = completion(
+                llm_response = self._vllm_client.completion(
                     messages=messages,
-                    model=self._model,
                     temperature=self._temperature,
                 )
-                response_text = llm_response.choices[0].message.content
+                response_text = llm_response.content
                 messages.append({"role": "assistant", "content": response_text})
             except Exception as exc:
                 LOGGER.error(f"LLM call failed: {exc}")
@@ -135,13 +144,12 @@ Format: <reasoning>Your thinking process here</reasoning><command>go to kitchen<
 
         # Generate action
         try:
-            response = completion(
+            response = self._vllm_client.completion(
                 messages=messages,
-                model=self._model,
                 temperature=self._temperature,
             )
 
-            assistant_content = response.choices[0].message.content
+            assistant_content = response.content
             messages.append({"role": "assistant", "content": assistant_content})
 
             # Ensure proper formatting - check for reasoning and command tags
@@ -179,13 +187,10 @@ def start_white_agent(
     model: str | None = None,
     temperature: float | None = None,
     prompt_profile: str | None = None,
+    vllm_base_url: str | None = None,
 ) -> None:
     """Start the white agent HTTP service."""
     demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
-    # Tame LiteLLM console chatter as much as possible
-    os.environ.setdefault("LITELLM_LOG", "ERROR")
-    os.environ.setdefault("LITELLM_VERBOSE", "false")
-    os.environ.setdefault("LITELLM_SUPPRESS_DEBUG", "1")
     logging.basicConfig(level=(logging.WARNING if demo_mode else logging.INFO))
     if demo_mode:
         # Mute virtually all logs in demo mode; green agent will print the exchange
@@ -194,17 +199,11 @@ def start_white_agent(
         except Exception:
             pass
     # Suppress noisy third-party logs for demo-friendly output
-    # Suppress noisy third-party logs for demo-friendly output
-    for noisy in ("litellm", "httpx", "openai", "a2a", "uvicorn", "uvicorn.error", "uvicorn.access"):
+    for noisy in ("httpx", "a2a", "uvicorn", "uvicorn.error", "uvicorn.access"):
         try:
             logging.getLogger(noisy).setLevel(logging.WARNING)
         except Exception:
             pass
-    # Also suppress observed LiteLLM logger name if present
-    try:
-        logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-    except Exception:
-        pass
     LOGGER.info("Starting TextWorld white agent on %s:%s", host, port)
 
     # Try to load from TOML, otherwise generate dynamically
@@ -218,14 +217,16 @@ def start_white_agent(
         card = prepare_white_agent_card(url)
 
     # Resolve overrides from args or env
-    resolved_model = model or os.environ.get("WHITE_MODEL", "openai/gpt-4o")
+    resolved_model = model or os.environ.get("WHITE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
     resolved_temp = float(temperature if temperature is not None else os.environ.get("WHITE_TEMPERATURE", 0.0))
     resolved_profile = (prompt_profile or os.environ.get("WHITE_PROMPT_PROFILE", "standard")).strip().lower()
+    resolved_vllm_url = vllm_base_url or os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 
     executor = TextWorldWhiteAgentExecutor(
         model=resolved_model,
         temperature=resolved_temp,
         prompt_profile=resolved_profile,
+        vllm_base_url=resolved_vllm_url,
     )
     handler = DefaultRequestHandler(
         agent_executor=executor, task_store=InMemoryTaskStore()

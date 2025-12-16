@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "scoring_scale": {
     "min": 1.0,
     "max": 10.0
@@ -7,124 +7,121 @@
   "criteria": {
     "task_completion": {
       "name": "Task Completion",
-      "weight": 0.40,
+      "weight": 0.30,
       "description": "Whether the agent successfully completed the goal and achieved the correct final state",
       "scoring_guidelines": {
-        "high_score": "Task completed successfully with all goal conditions met",
-        "medium_score": "Task partially completed or completed with minor errors",
-        "low_score": "Task not completed or completed incorrectly"
+        "10": "Task completed successfully with all goal conditions met",
+        "5": "Task partially completed or missing some conditions",
+        "0": "Task not completed or completed incorrectly"
       },
       "examples": {
         "good": "Agent correctly placed clean apple in refrigerator as specified",
         "poor": "Agent placed apple in wrong location or failed to clean it first"
       },
-      "prompt_template": "Evaluate whether the agent successfully completed the task goal. Consider: Did it achieve the final desired state? Were all conditions met (e.g., object cleaned, heated, or placed correctly)?"
+      "prompt_template": "Did the agent achieve the goal state? Consider: Was the correct object found? Was it transformed correctly (cleaned/heated/cooled)? Was it placed in the correct location? Score 10 if fully successful, 0 if failed."
     },
     "efficiency": {
       "name": "Efficiency",
-      "weight": 0.30,
-      "description": "Minimal unnecessary actions, direct path to goal, few mistakes or corrections",
+      "weight": 0.20,
+      "description": "Steps used relative to step budget, minimal wasted actions",
       "scoring_guidelines": {
-        "high_score": "Minimal steps, direct path, no wasted actions or backtracking",
-        "medium_score": "Some unnecessary actions or minor detours, but generally efficient",
-        "low_score": "Many wasted actions, extensive backtracking, or circular behavior"
+        "9-10": "Near-optimal path, minimal steps, no wasted actions",
+        "7-8": "Efficient path with minor detours, few unnecessary actions",
+        "5-6": "Moderate wandering, some backtracking or repeated actions",
+        "3-4": "Significant inefficiency, many wasted steps",
+        "1-2": "Severe inefficiency, majority of steps are wasted"
       },
       "examples": {
         "good": "7 steps to complete task with no wasted moves",
-        "poor": "25 steps with multiple visits to same locations, unnecessary examinations"
+        "poor": "40 steps with multiple visits to same locations"
       },
-      "prompt_template": "Assess the efficiency of the agent's path. Consider: Number of steps relative to optimal, unnecessary actions (e.g., repeated looks, redundant navigation), backtracking, corrections, and recovery from mistakes."
+      "prompt_template": "Score efficiency based on steps used vs budget. Consider: step_ratio = steps_used / 50. Score roughly as: <20% = 9-10, 20-40% = 7-8, 40-60% = 5-6, 60-80% = 3-4, >80% = 1-2. Penalize repeated identical actions and unnecessary 'look' commands."
     },
     "strategy_quality": {
       "name": "Strategy Quality",
-      "weight": 0.20,
-      "description": "How sensible, prioritized, and adaptive the agent’s action sequence is.",
+      "weight": 0.25,
+      "description": "How sensible, prioritized, and adaptive the agent's action sequence is",
       "scoring_guidelines": {
         "9-10": [
-          "Prioritizes high-probability locations first.",
-          "Clear subgoal decomposition (find object → bring to target → complete action).",
-          "Minimal redundant steps or revisits.",
-          "Adapts strategy quickly to new observations or failed actions."
+          "Checks high-probability locations first (countertops, tables for visible items; cabinets/drawers for stored items)",
+          "Clear subgoal decomposition: find object → pick up → transform if needed → navigate to target → place",
+          "Opens containers systematically when searching",
+          "Minimal revisits to same locations",
+          "Adapts quickly when object not found in expected location"
         ],
         "7-8": [
-          "Mostly sensible ordering of actions.",
-          "Occasional inefficient choices, trajectory remains focused.",
-          "Some adaptation to new information.",
-          "Few unnecessary revisits."
+          "Mostly sensible search pattern",
+          "Occasional inefficient choices but trajectory stays focused",
+          "Some adaptation to new information",
+          "Few unnecessary revisits (≤2)"
         ],
         "5-6": [
-          "Systematic but poorly prioritized search.",
-          "Many unnecessary detours; checks unlikely locations before likely ones.",
-          "Some repetitive or redundant exploration.",
-          "Eventually completes task, but inefficiently."
+          "Systematic but poorly prioritized search (e.g., checks cabinets before countertops)",
+          "Many unnecessary detours",
+          "Some repetitive exploration",
+          "Eventually progresses but inefficiently"
         ],
         "3-4": [
-          "Partially systematic but often uninformed.",
-          "Frequently revisits same objects/locations without progress.",
-          "Poor adaptation to failures or new info.",
-          "Appears to be following a shallow or generic plan."
+          "Partially systematic but often uninformed",
+          "Frequently revisits same locations without progress",
+          "Poor adaptation to failures",
+          "Following a shallow or generic plan"
         ],
-        "0-2": [
-          "Strategy appears random or chaotic.",
-          "No prioritization or coherent search pattern.",
-          "Ignores obvious task structure.",
-          "Frequent looping or repeated failed actions.",
-          "Does not make meaningful progress toward the goal."
+        "1-2": [
+          "Strategy appears random or chaotic",
+          "No coherent search pattern",
+          "Ignores obvious task structure",
+          "Frequent looping or stuck behavior"
         ]
       },
-      "prompt_template": "Score the agent's strategy quality using the rubric bands. Cite concrete steps that justify the band."
-    },
-    "execution_quality": {
-      "name": "Execution Quality",
-      "weight": 0.05,
-      "description": "Valid commands, syntax correctness, appropriate use of game mechanics",
-      "scoring_guidelines": {
-        "high_score": "All commands valid, correct syntax, appropriate use of game mechanics",
-        "medium_score": "Most commands valid, occasional syntax errors that don't block progress",
-        "low_score": "Many invalid commands, syntax errors, misuse of game mechanics"
-      },
       "examples": {
-        "good": "All commands properly formatted and accepted by environment",
-        "poor": "Frequent 'unknown command' errors, incorrect object names, invalid action sequences"
+        "good": "For 'put apple in fridge': checks countertop → finds apple → picks up → goes to fridge → opens → puts",
+        "poor": "Wanders through all rooms, opens every container, picks up wrong objects, forgets to pick up before placing"
       },
-      "prompt_template": "Assess command execution quality. Consider: Are commands syntactically correct? Are object/receptacle names accurate? Are game mechanics used appropriately (e.g., can't heat with fridge)? Are invalid commands quickly corrected?"
+      "prompt_template": "Score strategy quality 1-10. Consider: (1) Did the agent check likely locations first? Countertops/tables before cabinets/drawers for visible items. (2) Did it minimize backtracking and revisits? (3) Did it complete subtasks in correct order (find→pick→transform→place)? (4) Did it adapt when objects weren't where expected? Cite 2-3 specific steps that justify your score."
     },
     "reasoning_quality": {
       "name": "Reasoning Quality",
-      "weight": 0.05,
-      "description": "How coherent, grounded, and goal-aware the agent’s explanations are.",
+      "weight": 0.25,
+      "description": "How coherent, goal-aware, and observation-grounded the agent's explanations are",
       "scoring_guidelines": {
         "9-10": [
-          "Explicitly references the goal and how each action contributes to it.",
-          "Reasoning is grounded in the current observation and adapts to failures.",
-          "No contradictions or hallucinations.",
-          "Reflects awareness of task structure and subgoals."
+          "Explicitly references the goal and explains how each action contributes",
+          "Reasoning is grounded in current observation (mentions objects/locations actually seen)",
+          "Adapts explanation when encountering unexpected results",
+          "Shows awareness of task structure and remaining subgoals",
+          "No hallucinated objects or contradictions"
         ],
         "7-8": [
-          "Reasoning generally aligns with observations and actions.",
-          "References relevant objects and the goal most of the time.",
-          "Some minor generic or shallow explanations, but overall coherent."
+          "Generally references goal and observations",
+          "Reasoning aligns with actions most of the time",
+          "Some adaptation to new information",
+          "Minor generic statements but overall coherent"
         ],
         "5-6": [
-          "Reasoning is mostly coherent but shallow or repetitive.",
-          "Mentions the goal inconsistently.",
-          "Limited adaptation to new information.",
-          "Often restates obvious observations without deeper insight."
+          "Reasoning is coherent but shallow or repetitive",
+          "Inconsistent goal references",
+          "Limited adaptation when things don't go as expected",
+          "Often restates observations without deeper insight"
         ],
         "3-4": [
-          "Reasoning is generic or mismatched to the environment.",
-          "Rarely references the actual goal.",
-          "Little to no adaptation when actions fail.",
-          "Occasional contradictions or irrelevant details."
+          "Reasoning is generic or mismatched to environment",
+          "Rarely references actual goal",
+          "Little adaptation to failures",
+          "Occasional contradictions or irrelevant details"
         ],
-        "0-2": [
-          "Reasoning contradicts the environment or hallucinated objects.",
-          "Does not mention the goal at all.",
-          "Generic filler or nonsensical explanations.",
-          "No alignment between reasoning and executed action."
+        "1-2": [
+          "Reasoning contradicts observations or hallucinates objects",
+          "Does not mention goal at all",
+          "Generic filler or copy-paste explanations",
+          "No alignment between reasoning and action"
         ]
       },
-      "prompt_template": "Score the agent's reasoning quality using the rubric bands. Reference specific reasoning snippets."
+      "examples": {
+        "good": "I need to find a mug. The countertop is a likely location for mugs. I see countertop 1 mentioned, so I'll check there first.",
+        "poor": "I will explore the environment. Let me look around. I should examine things."
+      },
+      "prompt_template": "Score reasoning quality 1-10. Consider: (1) Does the agent mention the specific goal object and target? (2) Does it reference what it actually observes? (3) Does it explain WHY it chose each action? (4) Does it adapt reasoning when actions fail or yield unexpected results? (5) Is reasoning unique per step or copy-pasted? Quote 1-2 reasoning snippets that justify your score."
     }
   },
   "qualitative_assessments": {
@@ -139,20 +136,55 @@
   "reasoning_trace_analysis": {
     "enabled": true,
     "focus_areas": [
-      "reasoning_quality",
-      "planning_evidence",
-      "error_handling"
+      "goal_awareness",
+      "observation_grounding", 
+      "adaptation_to_failures",
+      "subgoal_decomposition"
+    ]
+  },
+  "failure_patterns": {
+    "enabled": true,
+    "patterns": [
+      {
+        "name": "stuck_loop",
+        "description": "Agent repeats the same action 3+ times consecutively",
+        "severity": "high"
+      },
+      {
+        "name": "wrong_order",
+        "description": "Agent tries to place object before picking it up",
+        "severity": "medium"
+      },
+      {
+        "name": "target_confusion",
+        "description": "Agent places object in wrong location",
+        "severity": "high"
+      },
+      {
+        "name": "object_confusion",
+        "description": "Agent picks up wrong object type",
+        "severity": "medium"
+      },
+      {
+        "name": "incomplete_transform",
+        "description": "Agent skips required transformation (clean/heat/cool)",
+        "severity": "high"
+      },
+      {
+        "name": "excessive_exploration",
+        "description": "Agent visits 10+ locations without finding target object",
+        "severity": "low"
+      }
     ]
   },
   "model_settings": {
     "quick_rating": {
-      "model": "openai/gpt-4o",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
       "temperature": 0.0
     },
     "detailed_rating": {
-      "model": "openai/gpt-4o",
-      "temperature": 0.3
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "temperature": 0.2
     }
   }
 }
-

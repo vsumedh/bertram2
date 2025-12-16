@@ -9,8 +9,32 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from alfworld.agents.environment import get_environment
+from textworld.envs.pddl import textgen as _tw_textgen
 
 from .messaging import sanitize_action
+
+
+def _patch_textworld_evalsymbol() -> None:
+    """Ensure TextWorld EvalSymbol evaluates with the provided variables."""
+    if getattr(_tw_textgen.EvalSymbol, "_agentify_patched", False):
+        return
+
+    _orig_derive = _tw_textgen.EvalSymbol.derive
+
+    def _derive(self, context=None):
+        context = context or self.context
+        variables = context.get("variables", {})
+        try:
+            value = eval(self.expression, {}, variables)
+        except Exception:
+            return _orig_derive(self, context)
+        return [_tw_textgen.TerminalSymbol(value)]
+
+    _tw_textgen.EvalSymbol.derive = _derive
+    _tw_textgen.EvalSymbol._agentify_patched = True
+
+
+_patch_textworld_evalsymbol()
 
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "green_agent"
@@ -139,13 +163,15 @@ class StepResult:
 class TextWorldEnvironment:
     """Wrapper around ALFWorld environment for TextWorld evaluation."""
 
-    def __init__(self, task_config: TaskConfig):
+    def __init__(self, task_config: TaskConfig, *, use_expert_plan: bool = False):
         """Initialize environment with task configuration.
 
         Args:
             task_config: Configuration for the task
+            use_expert_plan: Request expert plan from ALFWorld (for fast-mode runs)
         """
         self._task_config = task_config
+        self._use_expert_plan = use_expert_plan
         self._env = None
         self._episode_id = (
             task_config.episode_id or f"ep_{int(time.time())}_{task_config.task_index}"
@@ -158,6 +184,7 @@ class TextWorldEnvironment:
         self._info: Dict[str, Any] = {}
         self._start_time = time.time()
         self._task_entry: Optional[Dict[str, str]] = None
+        self._expert_plan: list[str] = []
 
     @property
     def goal(self) -> str:
@@ -318,6 +345,12 @@ class TextWorldEnvironment:
             )
 
         config = copy.deepcopy(TEXTWORLD_ENV_CFG)
+        if self._use_expert_plan:
+            # Request expert planner commands for fast mode.
+            config["general"]["training_method"] = "dagger"
+            config["dagger"]["training"]["max_nb_steps_per_episode"] = self._task_config.max_steps
+            config["env"]["expert_type"] = "planner"
+
         config["dataset"] = {
             "data_path": str(game_dir),
             "eval_id_data_path": str(game_dir),
@@ -345,6 +378,8 @@ class TextWorldEnvironment:
             key: value[0] if isinstance(value, list) else value
             for key, value in info.items()
         }
+        # Capture expert plan if available (fast-mode).
+        self._update_expert_plan(info)
         self._start_time = time.time()
 
         return {
@@ -389,6 +424,7 @@ class TextWorldEnvironment:
         self._step_count += 1
         self._done = done
         self._info = info_unbatched
+        self._update_expert_plan(info_unbatched)
 
         return StepResult(
             observation=observation,
@@ -411,8 +447,25 @@ class TextWorldEnvironment:
             "success": bool(self._info.get("won", False)),
         }
 
+    def walkthrough(self) -> list[str]:
+        """Return expert plan if available, else empty list."""
+        return list(self._expert_plan) if self._expert_plan else []
+
     def reset(self) -> None:
         """Reset and clean up environment."""
         if self._env is not None:
             self._env.close()
         self._env = None
+
+    def _update_expert_plan(self, info: Optional[Dict[str, Any]]) -> None:
+        """Normalize and store expert plan if present in info."""
+        if not self._use_expert_plan:
+            return
+        plan = info.get("extra.expert_plan") if isinstance(info, dict) else None
+        self._expert_plan = []
+        if isinstance(plan, list):
+            for item in plan:
+                if isinstance(item, list):
+                    self._expert_plan.extend([str(x) for x in item if x is not None])
+                elif item is not None:
+                    self._expert_plan.append(str(item))

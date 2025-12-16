@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli as tomllib  # Backport for <=3.10
 
 
 @dataclass
@@ -88,7 +91,7 @@ class ModelSettings:
     def from_dict(cls, data: Dict[str, Any]) -> ModelSettings:
         """Create ModelSettings from dictionary."""
         return cls(
-            model=str(data.get("model", "openai/gpt-4o")),
+            model=str(data.get("model", "Qwen/Qwen2.5-7B-Instruct")),
             temperature=float(data.get("temperature", 0.3)),
         )
 

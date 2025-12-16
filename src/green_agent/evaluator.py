@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from litellm import completion
+from ..utils.vllm_client import completion as vllm_completion
 
 from .rubric import EvaluationRubric, ModelSettings
 
@@ -80,28 +80,37 @@ class LLMJudgeEvaluator:
         """
         trajectory_text = self._format_trajectory(trajectory)
 
-        prompt = f"""Rate this agent's performance from {self.rubric.scoring_scale.min}-{self.rubric.scoring_scale.max} ({self.rubric.scoring_scale.max}=perfect).
+        prompt = f"""Rate this TextWorld agent's overall performance from {self.rubric.scoring_scale.min}-{self.rubric.scoring_scale.max}.
 
 Goal: {goal}
-Success: {success}
+Outcome: {"Success" if success else "Failure"}
+Steps: {len(trajectory)}/{50}
 
 Trajectory:
 {trajectory_text}
 
-Respond with ONLY a number. No explanation."""
+Quick scoring guide:
+- 9-10: Success + efficient (<15 steps) + clear reasoning
+- 7-8: Success + moderate steps (15-30) OR efficient failure with good strategy
+- 5-6: Success but inefficient (30-50 steps) OR close failure with decent approach
+- 3-4: Failure with some goal-directed behavior
+- 1-2: Failure with random/stuck behavior
+
+Respond with ONLY a number (e.g., 7.5). No explanation."""
 
         model_settings = self.rubric.model_settings.get("quick_rating")
         if model_settings is None:
-            model_settings = ModelSettings(model="openai/gpt-4o", temperature=0.0)
+            model_settings = ModelSettings(
+                model="Qwen/Qwen2.5-7B-Instruct", temperature=0.0
+            )
 
         try:
-            response = completion(
+            response = vllm_completion(
                 messages=[{"role": "user", "content": prompt}],
-                model=model_settings.model,
                 temperature=model_settings.temperature,
             )
 
-            rating_text = response.choices[0].message.content.strip()
+            rating_text = response.content.strip()
             numbers = re.findall(r"\d+\.?\d*", rating_text)
             if numbers:
                 rating = float(numbers[0])
@@ -202,16 +211,17 @@ Respond with ONLY a number. No explanation."""
 
         model_settings = self.rubric.model_settings.get("detailed_rating")
         if model_settings is None:
-            model_settings = ModelSettings(model="openai/gpt-4o", temperature=0.3)
+            model_settings = ModelSettings(
+                model="Qwen/Qwen2.5-7B-Instruct", temperature=0.3
+            )
 
         try:
-            response = completion(
+            response = vllm_completion(
                 messages=[{"role": "user", "content": prompt}],
-                model=model_settings.model,
                 temperature=model_settings.temperature,
             )
 
-            content = response.choices[0].message.content
+            content = response.content
 
             # Parse overall rating
             overall_rating = self._parse_overall_rating(content)
@@ -271,7 +281,7 @@ Respond with ONLY a number. No explanation."""
         """
         trajectory_text = self._format_trajectory_with_reasoning(trajectory)
 
-        prompt = f"""Analyze the reasoning traces provided by the agent at each step.
+        prompt = f"""Analyze the reasoning traces provided by the TextWorld agent at each step.
 
 Goal: {goal}
 
@@ -280,24 +290,27 @@ Trajectory with Reasoning:
 
 Provide analysis in the following format:
 
-Reasoning Quality: [assessment of reasoning coherence, clarity, and usefulness]
-Planning Evidence: [evidence of planning, subgoal decomposition, strategic thinking]
-Error Handling: [how the agent responds to errors, unexpected observations, or failures]
+Reasoning Quality: [Does the agent explain WHY actions are chosen? Does it reference what it actually sees in observations? Are explanations unique per step or copy-pasted? Quote 1 example.]
 
-Be specific and reference particular steps."""
+Planning Evidence: [Does the agent show subgoal awareness (find→pick→transform→place)? Does it prioritize likely object locations? Does it systematically search containers? Quote 1 example.]
+
+Error Handling: [How does the agent respond to "nothing happens", closed containers, or objects not found? Does it adapt strategy or repeat failed actions? Quote 1 example.]
+
+Be specific and cite step numbers."""
 
         model_settings = self.rubric.model_settings.get("detailed_rating")
         if model_settings is None:
-            model_settings = ModelSettings(model="openai/gpt-4o", temperature=0.3)
+            model_settings = ModelSettings(
+                model="Qwen/Qwen2.5-7B-Instruct", temperature=0.3
+            )
 
         try:
-            response = completion(
+            response = vllm_completion(
                 messages=[{"role": "user", "content": prompt}],
-                model=model_settings.model,
                 temperature=model_settings.temperature,
             )
 
-            content = response.choices[0].message.content
+            content = response.content
 
             reasoning_quality = self._extract_field(content, "Reasoning Quality:")
             planning_evidence = self._extract_field(content, "Planning Evidence:")
@@ -497,9 +510,159 @@ Be specific and reference particular steps."""
         return None
 
 
+def _format_trajectory_for_llm_eval(trajectory: List[Dict[str, Any]]) -> str:
+    """Format trajectory with reasoning for LLM evaluation prompt."""
+    lines = []
+    for step_data in trajectory:
+        step_num = step_data.get("step", "?")
+        reasoning = step_data.get("reasoning", "")
+        action = step_data.get("action", "")
+        observation = step_data.get("observation", "")
+
+        # Format reasoning (truncate if very long)
+        if reasoning:
+            reasoning_display = (
+                reasoning[:200] + "..." if len(reasoning) > 200 else reasoning
+            )
+            lines.append(f"Step {step_num}: [Reasoning: {reasoning_display}]")
+        else:
+            lines.append(f"Step {step_num}: [No reasoning provided]")
+
+        lines.append(f"  Action: {action}")
+
+        # Include observation snippet for context
+        if observation:
+            obs_snippet = observation[:120].replace("\n", " ")
+            lines.append(
+                f"  Result: {obs_snippet}{'...' if len(observation) > 120 else ''}"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+async def evaluate_with_llm(
+    goal: str,
+    trajectory: List[Dict[str, Any]],
+    success: bool,
+    step_budget: int = 50,
+) -> Optional[Dict[str, Any]]:
+    """
+    Single LLM call to evaluate reasoning and strategy quality.
+
+    Args:
+        goal: Task goal description
+        trajectory: List of trajectory step dictionaries
+        success: Whether task was completed successfully
+        step_budget: Maximum allowed steps
+
+    Returns:
+        Dict with keys: reasoning_score, strategy_score,
+        reasoning_rationale, strategy_rationale, notable_moments
+
+        Returns None on failure (caller should fall back to heuristics).
+    """
+    import json
+
+    steps_used = len(trajectory)
+    outcome_str = "Success" if success else "Failure"
+    trajectory_text = _format_trajectory_for_llm_eval(trajectory)
+
+    prompt = f"""You are evaluating an AI agent's performance on a TextWorld household task.
+
+TASK GOAL: {goal}
+OUTCOME: {outcome_str} in {steps_used}/{step_budget} steps
+
+TRAJECTORY:
+{trajectory_text}
+
+Evaluate TWO dimensions on a 1-10 scale:
+
+REASONING QUALITY: Does the agent's reasoning...
+- Explicitly reference the goal object and target location?
+- Ground explanations in what it actually observes (objects, locations)?
+- Explain WHY it chose each action (not just what it does)?
+- Adapt when objects aren't where expected or actions fail?
+- Avoid copy-paste or generic "I will explore" statements?
+
+STRATEGY QUALITY: Does the agent's approach...
+- Check likely locations first (countertops/tables for visible items, cabinets/drawers for stored)?
+- Follow correct task order: find → pick up → transform if needed → navigate → place?
+- Minimize backtracking and revisits to same locations?
+- Open containers systematically when searching?
+- Recover quickly from "nothing happens" or error observations?
+
+TextWorld-specific score anchors:
+- 9-10: Checks 2-3 high-probability locations, correct subgoal order, adaptive reasoning
+- 7-8: Mostly efficient search, occasional unnecessary detours, reasoning references goal
+- 5-6: Systematic but poorly prioritized (e.g., checks every cabinet), shallow reasoning
+- 3-4: Frequent revisits, generic reasoning like "let me explore", poor adaptation
+- 1-2: Random wandering, no goal awareness, repeated identical actions (stuck loop)
+
+Respond ONLY with valid JSON (no markdown, no explanation):
+{{"reasoning_score": <float 1-10>, "reasoning_rationale": "<cite 1 specific step>", "strategy_score": <float 1-10>, "strategy_rationale": "<cite 1 specific step>", "notable_moments": ["step N: observation"]}}"""
+
+    try:
+        response = vllm_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+
+        content = response.content.strip()
+
+        # Try to parse JSON response
+        # Handle potential markdown code blocks
+        if content.startswith("```"):
+            # Extract JSON from code block
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
+            if json_match:
+                content = json_match.group(1).strip()
+
+        result = json.loads(content)
+
+        # Validate required fields
+        required_fields = [
+            "reasoning_score",
+            "strategy_score",
+            "reasoning_rationale",
+            "strategy_rationale",
+        ]
+        for field in required_fields:
+            if field not in result:
+                LOGGER.warning(f"LLM evaluation missing required field: {field}")
+                return None
+
+        # Clamp scores to valid range
+        result["reasoning_score"] = max(
+            1.0, min(10.0, float(result["reasoning_score"]))
+        )
+        result["strategy_score"] = max(1.0, min(10.0, float(result["strategy_score"])))
+
+        # Ensure notable_moments is a list
+        if "notable_moments" not in result:
+            result["notable_moments"] = []
+        elif not isinstance(result["notable_moments"], list):
+            result["notable_moments"] = [str(result["notable_moments"])]
+
+        LOGGER.info(
+            f"LLM evaluation: reasoning={result['reasoning_score']:.1f}, "
+            f"strategy={result['strategy_score']:.1f}"
+        )
+
+        return result
+
+    except json.JSONDecodeError as e:
+        LOGGER.warning(f"LLM evaluation JSON parse failed: {e}")
+        return None
+    except Exception as exc:
+        LOGGER.warning(f"LLM evaluation failed: {exc}")
+        return None
+
+
 __all__ = [
     "CategoryRating",
     "ScoreBreakdown",
     "ReasoningTraceAssessment",
     "LLMJudgeEvaluator",
+    "evaluate_with_llm",
 ]

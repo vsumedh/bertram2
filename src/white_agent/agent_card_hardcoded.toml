@@ -1,0 +1,19 @@
+name = "TextWorld Hardcoded Agent"
+description = """
+Hardcoded white agent for TextWorld evaluation.
+Uses pre-recorded optimal trajectories to complete household tasks.
+"""
+version = "1.0.0"
+
+defaultInputModes = ["text/plain"]
+defaultOutputModes = ["text/plain"]
+
+[capabilities]
+
+[[skills]]
+id = "textworld_hardcoded_policy"
+name = "TextWorld Hardcoded Policy"
+description = "Completes household tasks using pre-recorded expert trajectories"
+tags = ["hardcoded agent", "textworld", "household", "optimal"]
+
+
