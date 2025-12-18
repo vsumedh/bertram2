@@ -25,7 +25,7 @@
       "weight": 0.20,
       "description": "Steps used relative to step budget, minimal wasted actions",
       "scoring_guidelines": {
-        "9-10": "Near-optimal path, minimal steps, no wasted actions",
+        "9-10": "Efficient path, minimal steps, no wasted actions",
         "7-8": "Efficient path with minor detours, few unnecessary actions",
         "5-6": "Moderate wandering, some backtracking or repeated actions",
         "3-4": "Significant inefficiency, many wasted steps",
@@ -137,7 +137,7 @@
     "enabled": true,
     "focus_areas": [
       "goal_awareness",
-      "observation_grounding", 
+      "observation_grounding",
       "adaptation_to_failures",
       "subgoal_decomposition"
     ]

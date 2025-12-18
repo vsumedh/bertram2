@@ -1,18 +1,38 @@
 # vLLM Server Configuration for TextWorld Agentify
-# Model: Qwen2.5-7B-Instruct (~14GB VRAM)
+# Model: Qwen2.5-14B-Instruct-GPTQ-Int4 (pre-quantized, ~9GB VRAM)
+# Hardware: NVIDIA L4 (23GB VRAM, Compute Capability 8.9)
 
-model: Qwen/Qwen2.5-7B-Instruct
+model: Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4
 host: 0.0.0.0
 port: 8000
 max_model_len: 8192
 gpu_memory_utilization: 0.90
 dtype: float16
+quantization: gptq
+kv_cache_dtype: auto
+enable_prefix_caching: true
+disable_log_requests: true
 
-# Optional settings (uncomment as needed):
-# tensor_parallel_size: 1  # For multi-GPU setups
-# quantization: null       # "awq", "gptq", "squeezellm" for quantized models
-# trust_remote_code: false
-# disable_log_requests: true
+# Performance notes:
+# - Pre-quantized GPTQ-Int4 model only requires ~9GB VRAM
+# - ~93-95% quality retention vs full precision
+# - ~2x faster inference compared to FP16
+# - Note: On-the-fly FP8 quantization requires >28GB VRAM (doesn't fit L4)
+# - Prefix caching improves performance for repeated prompt prefixes
 
+# Alternative configurations (uncomment as needed):
 
+# For AWQ (balanced speed/quality, ~10-12GB VRAM):
+# model: Qwen/Qwen2.5-14B-Instruct-AWQ
+# quantization: awq
+# gpu_memory_utilization: 0.92
 
+# For original 7B model (lower VRAM requirement, ~14GB):
+# model: Qwen/Qwen2.5-7B-Instruct
+# quantization: null
+# gpu_memory_utilization: 0.90
+
+# For FP8 on-the-fly (requires >28GB VRAM, e.g., A100):
+# model: Qwen/Qwen2.5-14B-Instruct
+# quantization: fp8
+# gpu_memory_utilization: 0.95

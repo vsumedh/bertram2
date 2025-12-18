@@ -5,8 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
+import os
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+# Enable unbuffered output in demo mode for real-time subprocess prints
+if os.environ.get("DEMO_MODE", "0") == "1":
+    os.environ["PYTHONUNBUFFERED"] = "1"
 
 from a2a.utils import get_text_parts
 
@@ -17,8 +22,8 @@ from src.white_agent.agent_hardcoded import start_hardcoded_agent
 from src.green_agent.green_assessor import (
     TrajectoryEval,
     aggregate_evals,
-    print_batch_summary,
 )
+from src.green_agent.output_formatter import TerminalColors, _score_color
 from src.utils.messaging import parse_tags
 
 
@@ -30,318 +35,60 @@ async def _ensure_agent_ready(
         raise RuntimeError(f"Agent at {url} did not become ready in time")
 
 
-async def launch_evaluation(
-    *,
-    task_config: Optional[Dict[str, Any]] = None,
-    green_host: str = "127.0.0.1",
-    green_port: int = 9001,
-    white_host: str = "127.0.0.1",
-    white_port: int = 9002,
-    fast_white: bool = False,
-    use_hardcoded: bool = False,
-) -> None:
-    """Launch the end-to-end evaluation loop for TextWorld."""
-    task_config = task_config or {
-        "task_index": 0,
-        "max_steps": 50,
-    }
+def _format_aggregate_summary(
+    agent_label: str,
+    summary_data: Dict[str, Any],
+    max_steps: int,
+) -> str:
+    """Format the aggregate summary with ANSI colors matching evaluation output.
 
-    # Calculate timeout based on max_steps: ~10 seconds per step + buffer
-    max_steps = task_config.get("max_steps", 50)
-    timeout = max(600.0, max_steps * 12.0)  # Minimum 10 min, or 12 sec per step
-    print(f"Using timeout: {timeout:.1f} seconds for {max_steps} steps")
-    messenger = A2AMessenger(timeout=timeout)
-    processes: list[multiprocessing.Process] = []
+    Uses the same color conventions as DemoFormatter.format_evaluation():
+    - DIV_DOUBLE for major section boundaries
+    - BOLD for headers and key values
+    - _score_color() for score values (green >= 7, yellow >= 4, red < 4)
+    - Success rate color-coded (green >= 80%, yellow >= 50%, red < 50%)
+    """
+    c = TerminalColors
 
-    green_url = f"http://{green_host}:{green_port}"
-    white_url = f"http://{white_host}:{white_port}"
+    success_count = summary_data["success_count"]
+    total = summary_data["total"]
+    success_rate = summary_data["success_rate"]
+    mean_steps = summary_data["mean_steps"]
+    mean_overall = summary_data["mean_overall"]
 
-    try:
-        # Start green agent
-        green_process = multiprocessing.Process(
-            target=start_green_agent,
-            kwargs={"agent_name": "agent_card", "host": green_host, "port": green_port},
-            daemon=True,
-        )
-        green_process.start()
-        processes.append(green_process)
-        await _ensure_agent_ready(messenger, green_url)
-        print("Green agent is ready.")
+    # Color-code success rate
+    if success_rate >= 0.8:
+        rate_color = c.GREEN_FG
+    elif success_rate >= 0.5:
+        rate_color = c.YELLOW_FG
+    else:
+        rate_color = c.RED_FG
 
-        if not fast_white:
-            if use_hardcoded:
-                # Start hardcoded white agent
-                white_process = multiprocessing.Process(
-                    target=start_hardcoded_agent,
-                    kwargs={
-                        "agent_name": "agent_card_hardcoded",
-                        "host": white_host,
-                        "port": white_port,
-                    },
-                    daemon=True,
-                )
-                white_process.start()
-                processes.append(white_process)
-                await _ensure_agent_ready(messenger, white_url)
-                print("Hardcoded white agent is ready.")
-            else:
-                # Start regular LLM white agent
-                white_process = multiprocessing.Process(
-                    target=start_white_agent,
-                    kwargs={
-                        "agent_name": "agent_card",
-                        "host": white_host,
-                        "port": white_port,
-                    },
-                    daemon=True,
-                )
-                white_process.start()
-                processes.append(white_process)
-                await _ensure_agent_ready(messenger, white_url)
-                print("White agent is ready.")
-        else:
-            print("Fast white mode: skipping LLM white agent startup.")
+    # Get scores for color-coding
+    correctness = summary_data["correctness_batch"]
+    efficiency = summary_data["efficiency_batch"]
+    strategy = summary_data["mean_strategy"]
+    reasoning = summary_data["mean_reasoning"]
 
-        # Send task configuration to green agent
-        task_config_json = json.dumps(task_config, indent=2)
-        payload_parts = [
-            "<task_config>",
-            task_config_json,
-            "</task_config>",
-            "<fast_white>",
-            "1" if fast_white else "0",
-            "</fast_white>",
-        ]
-        if not fast_white:
-            payload_parts.insert(0, "</white_agent_url>")
-            payload_parts.insert(0, f"{white_url}")
-            payload_parts.insert(0, "<white_agent_url>")
-        payload = "\n".join(payload_parts)
-
-        print("Sending task to green agent...")
-        response = await messenger.send_text(
-            green_url,
-            payload,
-        )
-
-        # Print the response (skip in demo mode; green prints its own demo output)
-        import os as _os
-
-        if _os.environ.get("DEMO_MODE", "0") != "1":
-            response_texts = get_text_parts(response.parts)
-            for text in response_texts:
-                print(text)
-
-    finally:
-        # Cleanup
-        for process in processes:
-            if process.is_alive():
-                process.terminate()
-            with suppress(Exception):
-                process.join(timeout=5)
-        await messenger.aclose()
-
-
-def _parse_episode_summary(text: str) -> Dict[str, Any]:
-    """Parse success, steps, quick and overall rating from green report text."""
-    result: Dict[str, Any] = {
-        "success": None,
-        "steps": None,
-        "quick": None,
-        "overall": None,
-    }
-    try:
-        for line in text.splitlines():
-            line_stripped = line.strip()
-            if line_stripped.lower().startswith("success:"):
-                # Success: True/False
-                value = line_stripped.split(":", 1)[1].strip()
-                result["success"] = value.lower() in ("true", "1", "yes")
-            elif line_stripped.lower().startswith("steps:"):
-                # Steps: 12 / 50
-                right = line_stripped.split(":", 1)[1].strip()
-                num = right.split("/", 1)[0].strip()
-                result["steps"] = int(num)
-            elif line_stripped.lower().startswith("quick rating:"):
-                # Quick Rating: 6.5/10
-                right = line_stripped.split(":", 1)[1].strip()
-                num = right.split("/", 1)[0].strip()
-                result["quick"] = float(num)
-            elif line_stripped.lower().startswith(
-                "overall rating (weighted):"
-            ) or line_stripped.lower().startswith("overall rating:"):
-                right = line_stripped.split(":", 1)[1].strip()
-                num = right.split("/", 1)[0].strip()
-                try:
-                    result["overall"] = float(num)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return result
-
-
-async def benchmark_evaluation(
-    *,
-    task_indices: list[int],
-    max_steps: int = 50,
-    variants: list[Dict[str, Any]] | None = None,
-    green_host: str = "127.0.0.1",
-    green_port: int = 8722,
-    white_host: str = "127.0.0.1",
-    fast_white: bool = False,
-) -> None:
-    """Run multiple tasks across white-agent variants and print accuracy table."""
-    variants = variants or [{"name": "default", "model": "Qwen/Qwen2.5-7B-Instruct"}]
-    messenger = A2AMessenger(timeout=max(600.0, max_steps * 12.0))
-    processes: list[multiprocessing.Process] = []
-
-    green_url = f"http://{green_host}:{green_port}"
-
-    try:
-        # Start green once
-        green_process = multiprocessing.Process(
-            target=start_green_agent,
-            kwargs={"agent_name": "agent_card", "host": green_host, "port": green_port},
-            daemon=True,
-        )
-        green_process.start()
-        processes.append(green_process)
-        await _ensure_agent_ready(messenger, green_url)
-        print("Green agent is ready.")
-
-        # Run each variant sequentially (or fast mode without white agent)
-        results_by_variant: Dict[str, list[Dict[str, Any]]] = {}
-        base_white_port = 8800
-
-        if fast_white:
-            variant_name = "fast_white"
-            results_by_variant[variant_name] = []
-            for task_index in task_indices:
-                task_config = {
-                    "task_index": int(task_index),
-                    "max_steps": int(max_steps),
-                }
-                payload = (
-                    "<task_config>\n"
-                    f"{json.dumps(task_config, indent=2)}\n"
-                    "</task_config>\n"
-                    "<benchmark_mode>1</benchmark_mode>\n"
-                    "<fast_white>1</fast_white>"
-                )
-                print(f"→ [fast_white] Task {task_index}: sending to green agent...")
-                response = await messenger.send_text(green_url, payload)
-                response_texts = get_text_parts(response.parts)
-                for text in response_texts:
-                    print(text)
-                final_text = response_texts[-1] if response_texts else ""
-                summary = _parse_episode_summary(final_text)
-                success = bool(summary.get("success") is True)
-                steps = summary.get("steps")
-                print(f"  Result: success={success}, steps={steps}")
-                results_by_variant[variant_name].append(summary)
-        else:
-            for idx, variant in enumerate(variants):
-                name = variant.get("name", f"variant_{idx + 1}")
-                model = variant.get("model", "Qwen/Qwen2.5-7B-Instruct")
-                temperature = float(variant.get("temperature", 0.0))
-                prompt_profile = variant.get("prompt_profile", "standard")
-
-                # Use dedicated port per variant
-                white_port = base_white_port + idx
-                white_url = f"http://{white_host}:{white_port}"
-
-                print(
-                    f"\nStarting white agent '{name}' (model={model}, profile={prompt_profile}) on {white_url} ..."
-                )
-                white_process = multiprocessing.Process(
-                    target=start_white_agent,
-                    kwargs={
-                        "agent_name": "agent_card",
-                        "host": white_host,
-                        "port": white_port,
-                        "model": model,
-                        "temperature": temperature,
-                        "prompt_profile": prompt_profile,
-                    },
-                    daemon=True,
-                )
-                white_process.start()
-                processes.append(white_process)
-                await _ensure_agent_ready(messenger, white_url)
-                print(f"White agent '{name}' is ready.")
-
-                variant_results: list[Dict[str, Any]] = []
-
-                # Run tasks for this variant
-                for task_index in task_indices:
-                    task_config = {
-                        "task_index": int(task_index),
-                        "max_steps": int(max_steps),
-                    }
-                    payload = (
-                        "<white_agent_url>\n"
-                        f"{white_url}\n"
-                        "</white_agent_url>\n"
-                        "<benchmark_mode>1</benchmark_mode>\n"
-                        "<task_config>\n"
-                        f"{json.dumps(task_config, indent=2)}\n"
-                        "</task_config>\n"
-                        "<fast_white>0</fast_white>"
-                    )
-                    print(f"→ [{name}] Task {task_index}: sending to green agent...")
-                    response = await messenger.send_text(green_url, payload)
-                    response_texts = get_text_parts(response.parts)
-                    # Print per-task report returned by green (includes pre/post and preview)
-                    for text in response_texts:
-                        print(text)
-                    # Parse success and steps from the last text
-                    final_text = response_texts[-1] if response_texts else ""
-                    summary = _parse_episode_summary(final_text)
-                    success = bool(summary.get("success") is True)
-                    steps = summary.get("steps")
-                    print(f"  Result: success={success}, steps={steps}")
-                    variant_results.append(summary)
-
-                results_by_variant[name] = variant_results
-
-                # Stop this white agent before next
-                if white_process.is_alive():
-                    white_process.terminate()
-                with suppress(Exception):
-                    white_process.join(timeout=5)
-                processes.remove(white_process)
-                print(f"White agent '{name}' stopped.")
-
-        # Aggregate and print summary
-        print("\nBenchmark Summary")
-        print("=================")
-        for name, summaries in results_by_variant.items():
-            total = len(summaries)
-            successes = sum(1 for s in summaries if s.get("success") is True)
-            acc = (successes / total) if total > 0 else 0.0
-            mean_steps = (
-                sum(
-                    s.get("steps", 0)
-                    for s in summaries
-                    if isinstance(s.get("steps"), int)
-                )
-                / total
-                if total > 0
-                else None
-            )
-            print(
-                f"- {name}: accuracy={acc:.2%}, mean_steps={'-' if mean_steps is None else f'{mean_steps:.1f}'}"
-            )
-
-    finally:
-        # Cleanup residual processes and client
-        for process in processes:
-            if process.is_alive():
-                process.terminate()
-            with suppress(Exception):
-                process.join(timeout=5)
-        await messenger.aclose()
+    lines = [
+        c.DIV_DOUBLE,
+        f"{c.BOLD}AGGREGATE SUMMARY{c.RESET}",
+        c.DIV_DOUBLE,
+        "",
+        f"Agent:        {c.BOLD}{agent_label}{c.RESET}",
+        f"Tasks:        {rate_color}{c.BOLD}{success_count}/{total}{c.RESET} successful ({rate_color}{success_rate * 100:.0f}%{c.RESET})",
+        f"Mean steps:   {c.BOLD}{mean_steps:.1f}{c.RESET} / {max_steps}",
+        f"Mean overall: {_score_color(mean_overall)}{c.BOLD}{mean_overall:.1f}{c.RESET} / 10",
+        "",
+        "Per-criterion averages:",
+        f"  Correctness: {_score_color(correctness)}{correctness:.1f}{c.RESET} / 10",
+        f"  Efficiency:  {_score_color(efficiency)}{efficiency:.1f}{c.RESET} / 10",
+        f"  Strategy:    {_score_color(strategy)}{strategy:.1f}{c.RESET} / 10",
+        f"  Reasoning:   {_score_color(reasoning)}{reasoning:.1f}{c.RESET} / 10",
+        "",
+        c.DIV_DOUBLE,
+    ]
+    return "\n".join(lines)
 
 
 def _extract_eval_from_parts(parts: list[str]) -> TrajectoryEval | None:
@@ -356,78 +103,11 @@ def _extract_eval_from_parts(parts: list[str]) -> TrajectoryEval | None:
     return None
 
 
-async def run_assessment_batch(
-    *,
-    task_indices: list[int],
-    max_steps: int = 50,
-    green_host: str = "127.0.0.1",
-    green_port: int = 9001,
-) -> None:
-    """Run fixed 5-task assessment using fast white mode and aggregate results."""
-    messenger = A2AMessenger(timeout=max(600.0, max_steps * 12.0))
-    processes: list[multiprocessing.Process] = []
-    green_url = f"http://{green_host}:{green_port}"
-    evals: list[TrajectoryEval] = []
-    white_label = "fast white"
-
-    try:
-        # Start green agent (fast white mode skips LLM white)
-        green_process = multiprocessing.Process(
-            target=start_green_agent,
-            kwargs={"agent_name": "agent_card", "host": green_host, "port": green_port},
-            daemon=True,
-        )
-        green_process.start()
-        processes.append(green_process)
-        await _ensure_agent_ready(messenger, green_url)
-        print("Green agent is ready (fast white).")
-
-        for task_index in task_indices:
-            task_config = {"task_index": int(task_index), "max_steps": int(max_steps)}
-            payload = (
-                "<task_config>\n"
-                f"{json.dumps(task_config, indent=2)}\n"
-                "</task_config>\n"
-                "<fast_white>1</fast_white>"
-            )
-            print(f"\n→ Task {task_index}: sending to green agent...")
-            response = await messenger.send_text(green_url, payload)
-            response_texts = get_text_parts(response.parts)
-            eval_obj = _extract_eval_from_parts(response_texts)
-            # Print per-task report (skip eval_json block)
-            for text in response_texts:
-                if "<eval_json>" in text:
-                    continue
-                print(text)
-            if eval_obj:
-                evals.append(eval_obj)
-            else:
-                print("Warning: no eval_json returned for this task.")
-
-        if evals:
-            summary = print_batch_summary(
-                evals=evals,
-                white_label=white_label,
-                step_budget=max_steps,
-            )
-            print("\n" + summary)
-        else:
-            print("No evaluations collected; skipping batch summary.")
-
-    finally:
-        for process in processes:
-            if process.is_alive():
-                process.terminate()
-            with suppress(Exception):
-                process.join(timeout=5)
-        await messenger.aclose()
-
-
 async def run_evaluation(
     *,
     task_indices: list[int],
     max_steps: int = 50,
-    agent_mode: str = "llm",  # "llm", "expert", or "fast"
+    agent_mode: str = "llm",  # "llm" or "expert"
     expert_profile: str = "expert",  # Profile for expert mode
     verbose: bool = False,
     green_host: str = "127.0.0.1",
@@ -440,7 +120,7 @@ async def run_evaluation(
     Args:
         task_indices: List of task indices to evaluate
         max_steps: Maximum steps per task
-        agent_mode: "llm" (LLM white agent), "expert" (hardcoded + reasoning), or "fast" (internal)
+        agent_mode: "llm" (LLM white agent), "expert" (hardcoded + reasoning)
         expert_profile: Profile for expert mode (expert, competent, novice, lucky_guesser, overthinker)
         verbose: Show step-by-step execution details
         green_host: Host for green agent
@@ -456,14 +136,13 @@ async def run_evaluation(
     white_url = f"http://{white_host}:{white_port}"
 
     # Determine mode settings
-    use_fast_white = agent_mode == "fast"
     use_hardcoded = agent_mode == "hardcoded"
 
     # Agent mode label for summary
     if use_hardcoded:
         agent_label = f"Hardcoded ({expert_profile})"
     else:
-        agent_labels = {"llm": "LLM (vLLM)", "fast": "Fast (internal)"}
+        agent_labels = {"llm": "LLM (vLLM)"}
         agent_label = agent_labels.get(agent_mode, agent_mode)
 
     print("=== Evaluation Configuration ===")
@@ -475,6 +154,14 @@ async def run_evaluation(
     print(f"Verbose: {verbose}")
     print()
 
+    # Set verbose environment variable for child processes
+    import os
+
+    if verbose:
+        os.environ["GREEN_VERBOSE"] = "1"
+    else:
+        os.environ.pop("GREEN_VERBOSE", None)
+
     try:
         # Start green agent
         green_process = multiprocessing.Process(
@@ -485,68 +172,61 @@ async def run_evaluation(
         green_process.start()
         processes.append(green_process)
         await _ensure_agent_ready(messenger, green_url)
-        print("Green agent is ready.")
+        print("Green agent is ready.", flush=True)
 
-        # Start white agent if not using fast mode
-        if not use_fast_white:
-            if use_hardcoded:
-                white_process = multiprocessing.Process(
-                    target=start_hardcoded_agent,
-                    kwargs={
-                        "agent_name": "agent_card_hardcoded",
-                        "host": white_host,
-                        "port": white_port,
-                        "profile": expert_profile,
-                    },
-                    daemon=True,
-                )
-                white_process.start()
-                processes.append(white_process)
-                await _ensure_agent_ready(messenger, white_url)
-                print(f"Hardcoded white agent is ready (profile={expert_profile}).")
-            else:
-                white_process = multiprocessing.Process(
-                    target=start_white_agent,
-                    kwargs={
-                        "agent_name": "agent_card",
-                        "host": white_host,
-                        "port": white_port,
-                    },
-                    daemon=True,
-                )
-                white_process.start()
-                processes.append(white_process)
-                await _ensure_agent_ready(messenger, white_url)
-                print("LLM white agent is ready.")
+        # Start white agent
+        if use_hardcoded:
+            white_process = multiprocessing.Process(
+                target=start_hardcoded_agent,
+                kwargs={
+                    "agent_name": "agent_card_hardcoded",
+                    "host": white_host,
+                    "port": white_port,
+                    "profile": expert_profile,
+                },
+                daemon=True,
+            )
+            white_process.start()
+            processes.append(white_process)
+            await _ensure_agent_ready(messenger, white_url)
+            print(
+                f"Hardcoded white agent is ready (profile={expert_profile}).",
+                flush=True,
+            )
         else:
-            print("Fast mode: using internal expert plan.")
+            white_process = multiprocessing.Process(
+                target=start_white_agent,
+                kwargs={
+                    "agent_name": "agent_card",
+                    "host": white_host,
+                    "port": white_port,
+                },
+                daemon=True,
+            )
+            white_process.start()
+            processes.append(white_process)
+            await _ensure_agent_ready(messenger, white_url)
+            print("LLM white agent is ready.", flush=True)
 
-        print()
+        print(flush=True)
 
         # Run each task
         for i, task_index in enumerate(task_indices):
-            print(f"=== Task {task_index} ({i + 1}/{len(task_indices)}) ===")
+            print(
+                f"=== Task {task_index} ({i + 1}/{len(task_indices)}) ===", flush=True
+            )
 
             task_config = {"task_index": int(task_index), "max_steps": int(max_steps)}
 
             # Build payload
-            if use_fast_white:
-                payload = (
-                    "<task_config>\n"
-                    f"{json.dumps(task_config, indent=2)}\n"
-                    "</task_config>\n"
-                    "<fast_white>1</fast_white>"
-                )
-            else:
-                payload = (
-                    "<white_agent_url>\n"
-                    f"{white_url}\n"
-                    "</white_agent_url>\n"
-                    "<task_config>\n"
-                    f"{json.dumps(task_config, indent=2)}\n"
-                    "</task_config>\n"
-                    "<fast_white>0</fast_white>"
-                )
+            payload = (
+                "<white_agent_url>\n"
+                f"{white_url}\n"
+                "</white_agent_url>\n"
+                "<task_config>\n"
+                f"{json.dumps(task_config, indent=2)}\n"
+                "</task_config>\n"
+            )
 
             # Send to green agent
             response = await messenger.send_text(green_url, payload)
@@ -555,8 +235,15 @@ async def run_evaluation(
             # Extract evaluation
             eval_obj = _extract_eval_from_parts(response_texts)
 
-            if verbose:
-                # Print full response (excluding raw eval_json)
+            # Check if demo mode is active
+            demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
+
+            if demo_mode:
+                # Demo mode: detailed EVALUATION already printed by subprocess
+                # Skip brief summary here to avoid redundancy
+                pass
+            elif verbose:
+                # Verbose non-demo: print full response (excluding raw eval_json)
                 for text in response_texts:
                     # Skip the raw eval_json block but keep everything else
                     lines = []
@@ -572,7 +259,7 @@ async def run_evaluation(
                     if filtered_text:
                         print(filtered_text)
             else:
-                # Print brief summary
+                # Non-verbose non-demo: print brief summary only
                 if eval_obj:
                     status = "YES" if eval_obj.success else "NO"
                     print(f"Success: {status}")
@@ -586,32 +273,12 @@ async def run_evaluation(
 
             print()
 
-        # Print aggregate summary
-        if evals:
-            print("=== AGGREGATE SUMMARY ===")
+        # Print aggregate summary (skip for single-task demo mode - already shown in EVALUATION)
+        demo_mode_active = os.environ.get("DEMO_MODE", "0") == "1"
+        if evals and not (len(evals) == 1 and demo_mode_active):
             summary_data = aggregate_evals(evals, step_budget=max_steps)
-
-            success_count = summary_data["success_count"]
-            total = summary_data["total"]
-            success_rate = summary_data["success_rate"]
-            mean_steps = summary_data["mean_steps"]
-            mean_overall = summary_data["mean_overall"]
-            mean_strategy = summary_data["mean_strategy"]
-            mean_reasoning = summary_data["mean_reasoning"]
-
-            print(f"Agent: {agent_label}")
-            print(
-                f"Tasks: {success_count}/{total} successful ({success_rate * 100:.0f}%)"
-            )
-            print(f"Mean steps: {mean_steps:.1f} / {max_steps}")
-            print(f"Mean overall: {mean_overall:.1f} / 10")
-            print()
-            print("Per-criterion averages:")
-            print(f"  Correctness: {summary_data['correctness_batch']:.1f} / 10")
-            print(f"  Efficiency: {summary_data['efficiency_batch']:.1f} / 10")
-            print(f"  Strategy: {mean_strategy:.1f} / 10")
-            print(f"  Reasoning: {mean_reasoning:.1f} / 10")
-        else:
+            print(_format_aggregate_summary(agent_label, summary_data, max_steps))
+        elif not evals:
             print("No evaluations collected.")
 
     finally:
@@ -625,4 +292,4 @@ async def run_evaluation(
 
 
 if __name__ == "__main__":
-    asyncio.run(launch_evaluation())
+    asyncio.run(run_evaluation(task_indices=[0], max_steps=50))

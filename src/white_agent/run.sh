@@ -1,3 +1,6 @@
 #!/bin/bash
+# Start white agent (LLM) for agentbeats integration
+# AGENT_PORT is automatically set by `agentbeats run_ctrl` and read by the CLI
 
-/opt/conda/envs/agentbeats/bin/python3 /home/jupyter/dev/textworld-agentify/main.py white
+cd "$(dirname "$0")/../.."
+exec python main.py white

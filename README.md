@@ -4,12 +4,14 @@ A lean evaluation framework for assessing agent performance in TextWorld using t
 
 ## Overview
 
-This framework evaluates white agents' ability to complete household tasks in TextWorld. The green agent manages the environment and evaluates performance, while the white agent uses an LLM to make decisions.
+This framework evaluates white agents' ability to complete household tasks in TextWorld. The green agent manages the environment and evaluates performance, while the white agent makes decisions using either an LLM or hardcoded trajectories.
 
 ## Architecture
 
-- **Green Agent**: Manages TextWorld environment, tracks trajectory, rates performance
-- **White Agent**: Uses LLM (GPT-4o) to generate commands based on observations
+- **Green Agent**: Manages TextWorld environment, tracks trajectory, rates performance using LLM-as-a-judge
+- **White Agent**: Generates commands based on observations. Two modes available:
+  - **LLM mode**: Uses Qwen2.5-14B-Instruct via vLLM server (FP8 quantized)
+  - **Hardcoded mode**: Pre-recorded trajectories with configurable reasoning profiles
 
 ## Installation
 
@@ -17,135 +19,122 @@ This framework evaluates white agents' ability to complete household tasks in Te
 pip install -r requirements.txt
 ```
 
-
 Or using `uv`:
 ```bash
 uv pip install -r requirements.txt
 ```
 
-Also make sure agentbeats is installed correctly.
+### Prerequisites
 
-## Configuration
-
-1. Set environment variables:
+1. **ALFWorld data**: Game files, PDDL logic, and expert plans must be available:
    ```bash
-   export OPENAI_API_KEY=your-api-key
-   export ALFWORLD_DATA=~/.cache/alfworld  # Optional, defaults to ~/.cache/alfworld
+   export ALFWORLD_DATA=~/.cache/alfworld  # Default location
    ```
 
-2. Ensure ALFWorld data is available (game files, PDDL, etc.)
+2. **vLLM server** (required for LLM white agent mode):
+   ```bash
+   # Start vLLM server with Qwen2.5-14B-GPTQ-Int4 (pre-quantized, ~9GB VRAM)
+   ./scripts/start_vllm_server.sh
+   # Or manually:
+   python -m vllm.entrypoints.openai.api_server \
+       --model Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4 \
+       --port 8000 \
+       --quantization gptq \
+       --enable-prefix-caching
+   ```
+   
+   **Note**: Uses pre-quantized GPTQ-Int4 model (~9GB VRAM, ~93% quality).
+   For larger GPUs (>28GB), you can use FP8: `--model Qwen/Qwen2.5-14B-Instruct --quantization fp8`
 
-3. Create/edit `src/green_agent/task_list.txt` with your tasks:
-   ```
-   game_path|split|task_type|difficulty|description
-   ```
+The evaluation judge also uses the same vLLM server - no separate OpenAI API key required.
 
 ## Usage
 
-### Full Evaluation (Recommended)
+### Quick Start: Run Evaluation
 
-Launch both agents and run evaluation:
-```bash
-python main.py launch --task-index 0 --max-steps 30
-```
-
-### Fast White Agent (expert plan shortcut)
-
-Skip the LLM white agent and use ALFWorld's expert plan to finish tasks quickly (useful for green-agent development and demos):
+The primary command is `evaluate`, which handles all agent orchestration:
 
 ```bash
-FAST_WHITE=1 python main.py launch --task-index 0 --max-steps 30
+# Run single task with LLM white agent (requires vLLM server)
+python main.py evaluate --tasks 0 --agent llm
+
+# Run single task with hardcoded agent
+python main.py evaluate --tasks 0 --agent hardcoded --profile expert
+
+# Run multiple tasks
+python main.py evaluate --tasks 0,1,2,3 --agent hardcoded
+
+# Run all 20 tasks
+python main.py evaluate --tasks all --agent hardcoded --profile expert
 ```
 
-For benchmarks:
+### Agent Modes
+
+| Mode | Description |
+|------|-------------|
+| `--agent llm` | LLM-based agent using Qwen2.5-14B via vLLM (FP8 quantized) |
+| `--agent hardcoded` | Pre-recorded trajectories with synthetic reasoning |
+
+**Note**: Both modes require a vLLM server running because the evaluation judge uses it for scoring.
+
+### Hardcoded Agent Profiles
+
+When using `--agent hardcoded`, you can select different reasoning quality profiles:
+
+| Profile | Strategy | Reasoning | Expected Score |
+|---------|----------|-----------|----------------|
+| `expert` | Optimal | High quality | ~9/10 |
+| `competent` | Suboptimal | Medium quality | ~7.5/10 |
+| `novice` | Poor | Low quality | ~5/10 |
+| `lucky_guesser` | Optimal | Low quality | ~7/10 |
+| `overthinker` | Suboptimal | High quality | ~8/10 |
+
 ```bash
-FAST_WHITE=1 python main.py benchmark --tasks 0,1,2 --max-steps 30
+# Example: Test with novice profile
+python main.py evaluate --tasks 4 --agent hardcoded --profile novice
 ```
-Note: fast mode still runs real environment steps but does not start the LLM white agent.
 
-### 5-task assessment (fast white, fixed scoring)
-
-Run the 5-task evaluator (default tasks 4,6,5,7,1) with rubric-based scoring and aggregate summary:
+### Full Options
 
 ```bash
-FAST_WHITE=1 python main.py assess --tasks 4,6,5,7,1 --max-steps 50
+python main.py evaluate --help
 ```
 
-This prints per-task evaluation blocks (correctness, efficiency, strategy, reasoning, weighted overall) and a batch summary (success rate, mean steps, per-criterion averages).
+Key options:
+- `--tasks`: Task indices (`"0"`, `"0,1,2"`, or `"all"`)
+- `--agent`: Agent mode (`"llm"` or `"hardcoded"`)
+- `--profile`: Hardcoded profile (expert/competent/novice/lucky_guesser/overthinker)
+- `--max-steps`: Maximum steps per task (default: 50)
+- `--verbose` / `-v`: Show step-by-step details
+- `--green-port`: Green agent port (default: 8722)
+- `--white-port`: White agent port (default: 8724)
+
+### Demo Mode
+
+For formatted terminal output with colors:
+```bash
+DEMO_MODE=1 python main.py evaluate --tasks 0 --agent hardcoded --profile expert
+```
 
 ### Start Agents Separately
 
+For manual orchestration or debugging:
+
 Green agent (evaluation manager):
 ```bash
-python main.py green --host 0.0.0.0 --port 9001
+python main.py green --host 0.0.0.0 --port 8722
 ```
 
-White agent (agent under test):
+White agent (LLM-based):
 ```bash
-python main.py white --host 0.0.0.0 --port 9002
+python main.py white --host 0.0.0.0 --port 8723
 ```
 
 ### Using Launcher Directly
 
 ```bash
-python launcher.py
+python launcher.py  # Runs task 0 with default LLM agent
 ```
-
-### Running green and white agents evaluations locally using A2A protocols
-
-We have full support for running agent evaluations locally, i.e. without using the agentbeats online platform. Green and white agents communicate correctly via the A2A protocol. 
-
-Steps:
-1. Ensure agentbeats is installed (e.g. via `pip install earthshaker`) and available locally
-2. All requirements in `requirements.txt` are installed, including alfworld and the datasets
-3. Run the assessments locally using the command `python3 launcher.py`
-
-You should see the evaluation run as in the following screenshot:
-
-<img width="1197" height="686" alt="Screenshot 2025-11-20 at 8 38 58 PM" src="https://github.com/user-attachments/assets/1d24ad75-531d-4e0b-a3b8-3e057e2ef008" />
-
-Finally, evaluations are performed as shown in the screenshot below:
-
-<img width="1115" height="63" alt="Screenshot 2025-11-20 at 8 45 30 PM" src="https://github.com/user-attachments/assets/2dbb7022-79d8-4ad6-bd45-0f73290375af" />
-
-
-### Integrating with agentbeats
-
-#### Run Green agent
-
-```bash
-conda activate earthshaker2
-cd ~/dev/textworld-agentify/src/green_agent
-HOST=ab.veenasumedh.com PORT=8011 agentbeats run_ctrl
-```
-<img width="1213" height="117" alt="run_green_agent" src="https://github.com/user-attachments/assets/df3dbbef-b24c-4cdc-86ed-628057bbcc00" />
-
-This will run the green agent, with a controller url of http://ab.veenasumedh.com:8011/ which can be registered on v2.agentbeats.org
-
-<img width="614" height="526" alt="register_green_agent" src="https://github.com/user-attachments/assets/246ab13a-acc2-4525-8a8d-15f5d49c9c6d" />
-
-The agent card is visible from the status page, showing it is correctly registered:
-
-<img width="1169" height="814" alt="green_agent_card" src="https://github.com/user-attachments/assets/554a89d6-ee24-42a4-a23a-f805177fd2e3" />
-
-
-#### Run White agent
-
-```bash
-conda activate earthshaker2
-cd ~/dev/textworld-agentify/src/white_agent
-HOST=ab.veenasumedh.com PORT=8012 agentbeats run_ctrl
-```
-<img width="1211" height="113" alt="run_white_agent" src="https://github.com/user-attachments/assets/7eb846d2-3f2d-443c-bca4-b66811edf583" />
-
-This will run the white agent, with a controller url of http://ab.veenasumedh.com:8012/ which can be registered on v2.agentbeats.org
-
-<img width="614" height="518" alt="register_white_agent" src="https://github.com/user-attachments/assets/b0370dbd-fdc4-4646-804c-008475cf2702" />
-
-The agent card is visible from the status page, showing it is correctly registered:
-
-<img width="1186" height="828" alt="white_agent_card" src="https://github.com/user-attachments/assets/947bd88a-5201-4f43-a0be-01a724938d57" />
-
 
 ## Evaluation Metrics
 
@@ -154,15 +143,18 @@ The framework uses an LLM-as-a-judge approach to evaluate agent performance. Aft
 ### Quantitative Metrics
 
 - **Success**: Whether task was completed (0 or 1)
-- **Step Count**: Number of steps taken
-- **Quick Rating**: Fast LLM rating (1-10) without detailed explanation
+- **Step Count**: Number of steps taken vs budget
+- **Quick Rating**: Lightweight LLM rating (1-10) without detailed explanation
 - **Overall Rating**: Weighted composite score (1-10) based on multiple criteria
-- **Per-Criterion Scores**: Individual scores for:
-  - Task Completion (40% weight)
-  - Efficiency (30% weight)
-  - Strategy Quality (20% weight)
-  - Execution Quality (5% weight)
-  - Reasoning Quality (5% weight)
+
+### Per-Criterion Scores
+
+| Criterion | Weight | Description |
+|-----------|--------|-------------|
+| Task Completion | 30% | Whether goal was achieved correctly |
+| Efficiency | 20% | Steps used relative to budget, wasted actions |
+| Strategy Quality | 25% | Sensible action sequence, prioritization, adaptation |
+| Reasoning Quality | 25% | Goal-awareness, observation grounding, coherence |
 
 ### Qualitative Assessments
 
@@ -171,11 +163,7 @@ The LLM judge also provides:
 - **Weaknesses**: Areas for improvement
 - **Notable Behaviors**: Interesting or unexpected patterns
 - **Recommendations**: Suggestions for improvement
-- **Reasoning Trace Analysis**: Assessment of reasoning quality, planning evidence, and error handling
-
-### Detailed Documentation
-
-For comprehensive information about the evaluation methodology, see [EVALUATION_METHODOLOGY.md](EVALUATION_METHODOLOGY.md).
+- **Reasoning Trace Analysis**: Assessment of goal-awareness, observation grounding, and adaptation
 
 ### Rubric Configuration
 
@@ -194,12 +182,59 @@ The framework looks for the rubric in this order:
 
 ```
 textworld-agentify/
+├── main.py                # CLI entry point (green, white, evaluate commands)
+├── launcher.py            # Evaluation orchestration logic
+├── requirements.txt       # Dependencies
+├── scripts/
+│   └── start_vllm_server.sh  # vLLM server startup script
 ├── src/
-│   ├── green_agent/      # Evaluation manager
+│   ├── green_agent/       # Evaluation manager
+│   │   ├── agent.py       # Green agent executor
+│   │   ├── episode_runner.py  # Episode execution
+│   │   ├── evaluator.py   # LLM judge implementation
+│   │   ├── green_assessor.py  # Trajectory assessment
+│   │   ├── evaluation_rubric.json  # Scoring criteria
+│   │   └── task_list.txt  # Task definitions
 │   ├── white_agent/       # Agent under test
+│   │   ├── agent.py       # LLM-based white agent
+│   │   └── agent_hardcoded.py  # Hardcoded trajectory agent
 │   └── utils/             # Shared utilities
-├── launcher.py            # Evaluation launcher
-├── main.py                # CLI entry point
-└── requirements.txt       # Dependencies
+│       ├── a2a_client.py  # A2A protocol client
+│       ├── textworld_env.py  # ALFWorld environment wrapper
+│       └── vllm_client.py # vLLM API client
+└── config/
+    └── vllm_server.yaml   # vLLM server configuration (Qwen2.5-14B GPTQ-Int4)
 ```
 
+## Task Configuration
+
+Tasks are defined in `src/green_agent/task_list.txt` with format:
+```
+game_path|split|task_type|difficulty|description
+```
+
+Example:
+```
+pick_clean_then_place_in_recep-Tomato-None-SinkBasin-8/trial_T20190909_024521_815140|valid_seen|pick_clean_then_place|medium|Clean tomato and place in sink
+```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ALFWORLD_DATA` | Path to ALFWorld data | `~/.cache/alfworld` |
+| `VLLM_MODEL` | Model name for vLLM | `Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4` |
+| `VLLM_BASE_URL` | vLLM server URL | `http://localhost:8000/v1` |
+| `VLLM_QUANTIZATION` | Quantization format (gptq/awq/fp8/none) | `gptq` |
+| `VLLM_KV_CACHE_DTYPE` | KV cache data type | `auto` |
+| `VLLM_TIMEOUT` | Request timeout in seconds | `180.0` |
+| `DEMO_MODE` | Enable formatted output | `0` |
+| `GREEN_VERBOSE` | Verbose green agent logging | Not set |
+
+## A2A Protocol Integration
+
+This framework uses the A2A (Agent-to-Agent) protocol for communication between green and white agents. Both agents expose HTTP endpoints and can be registered with A2A-compatible platforms.
+
+For detailed instructions on integrating with the AgentBeats platform, see [AGENTBEATS_INTEGRATION.md](AGENTBEATS_INTEGRATION.md).
+
+For future integration plans, see [NEXT_STEPS.md](NEXT_STEPS.md).
